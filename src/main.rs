@@ -23,8 +23,19 @@ fn main() {
             fs::remove_dir_all(&clone_path).unwrap();
         }
         fs::create_dir_all(&clone_path).unwrap();
-        repo_builder.clone(&project_url, &clone_path).unwrap();
+        let repo = repo_builder.clone(&project_url, &clone_path).unwrap();
         println!("{}", clone_path.display());
+
+        let mut remote = repo.find_remote("origin").unwrap();
+        let mut fetch_options = create_fetch_options();
+
+        remote
+            .fetch(
+                &["+refs/heads/*:refs/remotes/origin/*"],
+                Some(&mut fetch_options),
+                None,
+            )
+            .unwrap();
     }
 }
 
