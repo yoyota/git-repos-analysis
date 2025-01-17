@@ -1,4 +1,4 @@
-use git2::{Commit, DiffOptions, Oid, Repository};
+use git2::{DiffOptions, Oid, Repository};
 use std::str;
 
 use std::fs::File;
@@ -26,6 +26,12 @@ fn print_diff(repo: &Repository, oid: Oid) {
         let tree = commit.tree().unwrap();
         let parent_tree = parent_commit.tree().unwrap();
         let mut diff_options = DiffOptions::new();
+        diff_options
+            .context_lines(5)
+            .ignore_blank_lines(true)
+            .ignore_whitespace(true)
+            .ignore_whitespace_change(true)
+            .ignore_whitespace_eol(true);
         let diff = repo
             .diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut diff_options))
             .unwrap();
