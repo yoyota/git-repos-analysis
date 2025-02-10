@@ -1,9 +1,10 @@
 use regex::Regex;
 
-use git2::{DiffOptions, DiffStatsFormat, Oid, Repository};
+use git2::{DiffOptions, DiffStatsFormat, ErrorCode, Oid, Repository};
 
 use std::fs::File;
 use std::io::{self, BufRead};
+use std::str::from_utf8;
 
 fn main() {
     let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/clone_path.txt";
@@ -23,6 +24,8 @@ fn main() {
 
 fn print_diff(repo: &Repository, oid: Oid) {
     let commit = repo.find_commit(oid).unwrap();
+
+    println!("{}", commit.id());
     if let Some(parent_commit) = commit.parents().next() {
         let tree = commit.tree().unwrap();
         let parent_tree = parent_commit.tree().unwrap();
@@ -45,30 +48,27 @@ fn print_diff(repo: &Repository, oid: Oid) {
 
         let s = b.as_str().unwrap();
         for l in s.split("\n") {
-            println!("{}", l);
             let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
             if let Some(caps) = re.captures(l) {
-                let file_name = caps[1].trim(); // Capture file name and trim whitespace
-                let status = caps[2].trim(); // Capture status and trim whitespace
-                println!("File: '{}', Status: '{}'", file_name, status);
+                let file_name = caps[1].trim();
+                let status = caps[2].trim();
+                if status.parse::<u32>().is_ok() {
+                    println!("File: '{}', Status: '{}'", file_name, status);
+                    // diff_options.pathspec(file_name);
+                }
             }
         }
 
-        // if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
-        //     if printed_lines >= max_lines {
-        //         return false; // Stop printing further lines
-        //     }
-        //     let text = str::from_utf8(line.content()).unwrap();
-        //     print!("{}{}", line.origin(), text);
-        //     printed_lines += line.num_lines();
-
-        //     true
-        // }) {
-        //     if e.code() == ErrorCode::User {
-        //         return;
-        //     }
-        //     panic!("Error printing diff: {}", e);
-        // }
+        if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
+            let text = from_utf8(line.content()).unwrap();
+            print!("{}{}", line.origin(), text);
+            true
+        }) {
+            if e.code() == ErrorCode::User {
+                return;
+            }
+            panic!("Error printing diff: {}", e);
+        }
     }
 }
 
