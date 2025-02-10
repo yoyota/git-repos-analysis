@@ -14,7 +14,7 @@ fn main() {
         let repo = Repository::open(repo_path).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
         revwalk.push_glob("refs/*").unwrap();
-        for oid in revwalk.skip(6).take(1) {
+        for oid in revwalk.skip(0).take(2) {
             print_diff(&repo, oid.unwrap());
         }
     }
@@ -22,34 +22,34 @@ fn main() {
 
 fn print_diff(repo: &Repository, oid: Oid) {
     let commit = repo.find_commit(oid).unwrap();
+    let old_tree = match commit.parent_count() {
+        0 => None,
+        _ => Some(commit.parents().next().unwrap().tree().unwrap()),
+    };
 
-    println!("{}", commit.id());
-    if let Some(parent_commit) = commit.parents().next() {
-        let tree = commit.tree().unwrap();
-        let parent_tree = parent_commit.tree().unwrap();
+    let tree = commit.tree().unwrap();
 
-        let mut diff_options = DiffOptions::new();
-        diff_options
-            .context_lines(5)
-            .ignore_blank_lines(true)
-            .ignore_whitespace(true)
-            .ignore_whitespace_change(true)
-            .ignore_whitespace_eol(true);
+    let mut diff_options = DiffOptions::new();
+    diff_options
+        .context_lines(5)
+        .ignore_blank_lines(true)
+        .ignore_whitespace(true)
+        .ignore_whitespace_change(true)
+        .ignore_whitespace_eol(true);
 
-        let diff = repo
-            .diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut diff_options))
-            .unwrap();
+    let diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
+        .unwrap();
 
-        if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
-            let text = from_utf8(line.content()).unwrap();
-            print!("{}{}", line.origin(), text);
-            true
-        }) {
-            if e.code() == ErrorCode::User {
-                return;
-            }
-            panic!("Error printing diff: {}", e);
+    if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
+        let text = from_utf8(line.content()).unwrap();
+        print!("{}{}", line.origin(), text);
+        true
+    }) {
+        if e.code() == ErrorCode::User {
+            return;
         }
+        panic!("Error printing diff: {}", e);
     }
 }
 
