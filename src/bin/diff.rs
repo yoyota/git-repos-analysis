@@ -16,7 +16,7 @@ fn main() {
         let repo = Repository::open(repo_path).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
         revwalk.push_glob("refs/*").unwrap();
-        for oid in revwalk.skip(0).take(2) {
+        for oid in revwalk.skip(1).take(1) {
             print_diff(&repo, oid.unwrap());
         }
     }
@@ -24,6 +24,7 @@ fn main() {
 
 fn print_diff(repo: &Repository, oid: Oid) {
     let commit = repo.find_commit(oid).unwrap();
+    println!("{}", commit.id());
     let old_tree = match commit.parent_count() {
         0 => None,
         _ => Some(commit.parents().next().unwrap().tree().unwrap()),
@@ -49,16 +50,25 @@ fn print_diff(repo: &Repository, oid: Oid) {
 
     let s = b.as_str().unwrap();
     for l in s.split("\n") {
+        println!("{}", l);
         let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
         if let Some(caps) = re.captures(l) {
             let file_name = caps[1].trim();
             let status = caps[2].trim();
-            if status.parse::<u32>().is_ok() {
-                println!("File: '{}', Status: '{}'", file_name, status);
-                // diff_options.pathspec(file_name);
+            // println!("File: '{}', Status: {}", file_name, status);
+            if let Some(changes_stat) = status.parse::<u32>().ok() {
+                if changes_stat < 1000 {
+                    diff_options.pathspec(file_name);
+                }
             }
         }
     }
+
+    diff_options.pathspec(" ");
+
+    let diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
+        .unwrap();
 
     if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
         let text = from_utf8(line.content()).unwrap();
