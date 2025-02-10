@@ -1,4 +1,6 @@
-use git2::{DiffOptions, ErrorCode, Oid, Repository};
+use regex::Regex;
+
+use git2::{DiffOptions, DiffStatsFormat, ErrorCode, Oid, Repository};
 
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -40,6 +42,23 @@ fn print_diff(repo: &Repository, oid: Oid) {
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
         .unwrap();
+
+    let stats = diff.stats().unwrap();
+
+    let b = stats.to_buf(DiffStatsFormat::FULL, 100).unwrap();
+
+    let s = b.as_str().unwrap();
+    for l in s.split("\n") {
+        let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
+        if let Some(caps) = re.captures(l) {
+            let file_name = caps[1].trim();
+            let status = caps[2].trim();
+            if status.parse::<u32>().is_ok() {
+                println!("File: '{}', Status: '{}'", file_name, status);
+                // diff_options.pathspec(file_name);
+            }
+        }
+    }
 
     if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
         let text = from_utf8(line.content()).unwrap();
