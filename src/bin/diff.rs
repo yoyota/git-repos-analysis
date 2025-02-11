@@ -49,20 +49,21 @@ fn print_diff(repo: &Repository, oid: Oid) {
     let b = stats.to_buf(DiffStatsFormat::FULL, 100).unwrap();
 
     let s = b.as_str().unwrap();
-    for l in s.split("\n") {
-        println!("{}", l);
-        let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
-        if let Some(caps) = re.captures(l) {
-            let file_name = caps[1].trim();
-            let status = caps[2].trim();
-            // println!("File: '{}', Status: {}", file_name, status);
-            if let Some(changes_stat) = status.parse::<u32>().ok() {
-                if changes_stat < 1000 {
-                    diff_options.pathspec(file_name);
-                }
-            }
-        }
-    }
+    let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
+
+    s.split('\n')
+        .filter_map(|line| re.captures(line))
+        .filter_map(|caps| {
+            let file_name = caps[1].trim().to_string();
+            let changes_stat_str = caps[2].trim().to_string();
+            changes_stat_str.parse::<u32>().map_or_else(
+                |_| None,
+                |changes_stat| (changes_stat < 1000).then(|| file_name),
+            )
+        })
+        .for_each(|file_name| {
+            diff_options.pathspec(&file_name);
+        });
 
     diff_options.pathspec(" ");
 
