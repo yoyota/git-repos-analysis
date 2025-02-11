@@ -1,7 +1,5 @@
-use regex::Regex;
-
 use git2::{DiffOptions, DiffStatsFormat, ErrorCode, Oid, Repository};
-
+use regex::Regex;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::str::from_utf8;
@@ -11,9 +9,8 @@ fn main() {
     let file = File::open(file_path).unwrap();
     let reader = io::BufReader::new(file);
 
-    for line in reader.lines().take(1) {
-        let repo_path = line.unwrap();
-        let repo = Repository::open(repo_path).unwrap();
+    for line in reader.lines().take(1).flatten() {
+        let repo = Repository::open(line).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
         revwalk.push_glob("refs/*").unwrap();
         for oid in revwalk.skip(1).take(1) {
@@ -25,11 +22,8 @@ fn main() {
 fn print_diff(repo: &Repository, oid: Oid) {
     let commit = repo.find_commit(oid).unwrap();
     println!("{}", commit.id());
-    let old_tree = match commit.parent_count() {
-        0 => None,
-        _ => Some(commit.parents().next().unwrap().tree().unwrap()),
-    };
 
+    let old_tree = commit.parents().next().map(|p| p.tree().unwrap());
     let tree = commit.tree().unwrap();
 
     let mut diff_options = DiffOptions::new();
@@ -43,34 +37,34 @@ fn print_diff(repo: &Repository, oid: Oid) {
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
         .unwrap();
-
     let stats = diff.stats().unwrap();
 
-    let b = stats.to_buf(DiffStatsFormat::FULL, 100).unwrap();
+    let s = stats
+        .to_buf(DiffStatsFormat::FULL, 100)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let s = b.as_str().unwrap();
     let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
 
     s.split('\n')
         .filter_map(|line| re.captures(line))
         .filter_map(|caps| {
             let file_name = caps[1].trim().to_string();
-            let changes_stat_str = caps[2].trim().to_string();
-            changes_stat_str.parse::<u32>().map_or_else(
-                |_| None,
-                |changes_stat| (changes_stat < 1000).then(|| file_name),
-            )
+            let changes_stat_str = caps[2].trim();
+            changes_stat_str
+                .parse::<u32>()
+                .map_or_else(|_| None, |cs| (cs < 1000).then(|| file_name))
         })
         .for_each(|file_name| {
             diff_options.pathspec(&file_name);
         });
 
     diff_options.pathspec(" ");
-
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
         .unwrap();
-
     if let Err(e) = diff.print(git2::DiffFormat::Patch, |_, _, line| {
         let text = from_utf8(line.content()).unwrap();
         print!("{}{}", line.origin(), text);
