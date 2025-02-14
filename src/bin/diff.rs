@@ -9,16 +9,19 @@ fn main() {
     let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/clone_path.txt";
     let file = File::open(file_path).unwrap();
     let reader = io::BufReader::new(file);
-    let write_file_path = "/home/yoyota/hobby/gitlab-clone-to-local/test.txt";
-
-    let open_opotions = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(write_file_path)
-        .unwrap();
-    let mut writer = BufWriter::new(open_opotions);
 
     for line in reader.lines().flatten() {
+        let write_file_path = format!(
+            "/home/yoyota/hobby/gitlab-clone-to-local/{}.txt",
+            line.replace("/", "-")
+        );
+        let open_opotions = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(write_file_path)
+            .unwrap();
+        let mut writer = BufWriter::new(open_opotions);
+
         let repo = Repository::open(line).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
         revwalk.push_glob("refs/*").unwrap();
