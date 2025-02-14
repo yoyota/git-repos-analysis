@@ -21,15 +21,15 @@ fn main() {
         .open("clone_path.txt")
         .unwrap();
 
-    for line in reader.lines().skip(2).take(1) {
+    for line in reader.lines().take(10) {
         let project_url = line.unwrap();
         let clone_path = create_clone_dir(project_url.clone());
-        let repo = repo_builder.clone(&project_url, &clone_path).unwrap();
-        fetch_all_remote_branch(repo);
-
-        clone_path_file
-            .write(clone_path.as_os_str().as_encoded_bytes())
-            .unwrap();
+        if let Some(repo) = repo_builder.clone(&project_url, &clone_path).ok() {
+            fetch_all_remote_branch(repo);
+            writeln!(clone_path_file, "{}", clone_path.to_string_lossy()).unwrap();
+        } else {
+            println!("{} clone fail", project_url);
+        }
     }
 }
 
