@@ -1,8 +1,9 @@
+use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
-use std::str::from_utf8;
+use std::str::from_utf8; // For date formatting
 
 fn main() {
     let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/clone_path.txt";
@@ -41,7 +42,6 @@ fn main() {
 }
 
 fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
-    println!("{}", commit.message().unwrap_or(""));
     let old_tree = commit.parents().next().map(|p| p.tree().unwrap());
     let tree = commit.tree().unwrap();
 
@@ -64,6 +64,13 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
         .ignore_whitespace_eol(true);
 
     let mut diff_lines = Vec::new();
+
+    let timestamp = commit.time().seconds();
+    let datetime = Utc.timestamp_opt(timestamp, 0).single().unwrap();
+    let formatted_date = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+    diff_lines.push(formatted_date);
+    diff_lines.push(commit.message().unwrap_or("").to_string());
 
     let _ = diff.print(git2::DiffFormat::Patch, |_, _, line| {
         if let Ok(text) = from_utf8(line.content()) {
