@@ -21,7 +21,7 @@ fn main() {
         .open("clone_path.txt")
         .unwrap();
 
-    for line in reader.lines().take(10) {
+    for line in reader.lines() {
         let project_url = line.unwrap();
         let clone_path = create_clone_dir(project_url.clone());
         if let Some(repo) = repo_builder.clone(&project_url, &clone_path).ok() {
@@ -35,7 +35,7 @@ fn main() {
 
 fn create_clone_dir(project_url: String) -> PathBuf {
     let project_path = project_url.replace("https://gitlab.com/", "");
-    let base_path = Path::new("/tmp");
+    let base_path = Path::new("/home/yoyota/Downloads");
     let clone_path = base_path.join(project_path);
     if clone_path.exists() {
         fs::remove_dir_all(&clone_path).unwrap();
