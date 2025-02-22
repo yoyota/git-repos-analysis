@@ -1,24 +1,24 @@
 use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
-use std::fs::{metadata, remove_file, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::str::from_utf8; // For date formatting
 
 fn main() {
-    let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/clone_path.txt";
+    let file_path = "/home/yoyota/hobby/git-repos-analysis/clone_path.txt";
     let file = File::open(file_path).unwrap();
     let reader = io::BufReader::new(file);
 
     for line in reader.lines().flatten() {
         let write_file_path = format!(
-            "/home/yoyota/hobby/gitlab-clone-to-local/{}.txt",
+            "/home/yoyota/hobby/git-repos-analysis/{}.txt",
             line.replace("/", "|")
         );
         let open_opotions = OpenOptions::new()
             .create(true)
             .write(true)
-            .open(&write_file_path)
+            .open(write_file_path)
             .unwrap();
         let mut writer = BufWriter::new(open_opotions);
 
@@ -38,11 +38,8 @@ fn main() {
         {
             let lines = get_diff_lines(&repo, commit);
             lines.iter().for_each(|line| {
-                write!(writer, "{}", line).unwrap();
+                writeln!(writer, "{}", line).unwrap();
             });
-        }
-        if metadata(&write_file_path).unwrap().len() == 0 {
-            remove_file(&write_file_path).unwrap();
         }
     }
 }
@@ -75,8 +72,8 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
     let datetime = Utc.timestamp_opt(timestamp, 0).single().unwrap();
     let formatted_date = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
-    diff_lines.push(formatted_date + "\n");
-    diff_lines.push(commit.message().unwrap_or("").to_string() + "\n");
+    diff_lines.push(formatted_date);
+    diff_lines.push(commit.message().unwrap_or("").to_string());
 
     let _ = diff.print(git2::DiffFormat::Patch, |_, _, line| {
         if let Ok(text) = from_utf8(line.content()) {
