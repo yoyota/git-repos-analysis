@@ -93,8 +93,9 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
     let datetime = Utc.timestamp_opt(timestamp, 0).single().unwrap();
     let formatted_date = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
-    diff_lines.push(formatted_date + "\n");
-    diff_lines.push(commit.message().unwrap_or("").to_string() + "\n");
+    diff_lines.push(format!("commit date: {formatted_date}\n"));
+    let commit_message = commit.message().unwrap_or("");
+    diff_lines.push(format!("commit message: {commit_message}\n"));
 
     let filtered_diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
