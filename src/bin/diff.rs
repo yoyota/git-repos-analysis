@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
-use std::fs::{File, OpenOptions};
+use std::fs::{metadata, remove_file, File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::str::from_utf8; // For date formatting
 
@@ -18,8 +18,9 @@ fn main() {
         let open_opotions = OpenOptions::new()
             .create(true)
             .write(true)
-            .open(write_file_path)
+            .open(&write_file_path)
             .unwrap();
+
         let mut writer = BufWriter::new(open_opotions);
 
         let repo = Repository::open(line).unwrap();
@@ -39,8 +40,12 @@ fn main() {
         {
             let lines = get_diff_lines(&repo, commit);
             lines.iter().for_each(|line| {
-                writeln!(writer, "{}", line).unwrap();
+                write!(writer, "{}", line).unwrap();
             });
+        }
+
+        if metadata(&write_file_path).unwrap().len() == 0 {
+            remove_file(&write_file_path).unwrap();
         }
     }
 }
