@@ -6,14 +6,14 @@ use std::io::{self, BufRead, BufWriter, Write};
 use std::str::from_utf8; // For date formatting
 
 fn main() {
-    let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/clone_path.txt";
+    let file_path = "/home/yoyota/hobby/git-repos-analysis/clone_path.txt";
     let file = File::open(file_path).unwrap();
     let reader = io::BufReader::new(file);
 
     for line in reader.lines().flatten() {
         let write_file_path = format!(
-            "/home/yoyota/hobby/gitlab-clone-to-local/{}.txt",
-            line.replace("/", "-")
+            "/home/yoyota/hobby/git-repos-analysis/{}.txt",
+            line.replace("/", "|")
         );
         let open_opotions = OpenOptions::new()
             .create(true)
@@ -35,6 +35,7 @@ fn main() {
                     .name()
                     .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
             })
+            .filter(|commit| commit.parent_count() <= 1)
         {
             let lines = get_diff_lines(&repo, commit);
             lines.iter().for_each(|line| {
@@ -94,11 +95,15 @@ fn filter_out_large_chang_files(stats: DiffStats) -> Vec<String> {
         .to_string();
 
     let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
+    let lock_regex = Regex::new(r"^(yarn\.lock|poetry\.lock|package-lock\.json)$").unwrap();
 
     s.split('\n')
         .filter_map(|line| re.captures(line))
         .filter_map(|caps| {
             let file_name = caps[1].trim().to_string();
+            if lock_regex.is_match(&file_name) {
+                return None;
+            }
             let changes_stat_str = caps[2].trim();
             changes_stat_str
                 .parse::<u32>()
