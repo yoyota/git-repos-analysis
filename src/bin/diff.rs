@@ -95,7 +95,7 @@ fn filter_out_large_chang_files(stats: DiffStats) -> Vec<String> {
         .to_string();
 
     let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
-    let lock_regex = Regex::new(r"^(yarn\.lock|poetry\.lock|package-lock\.json)$").unwrap();
+    let lock_regex = Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json)$").unwrap();
 
     s.split('\n')
         .filter_map(|line| re.captures(line))
