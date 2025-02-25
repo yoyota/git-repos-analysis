@@ -1,7 +1,7 @@
 use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
-use std::fs::{metadata, remove_file, File, OpenOptions};
+use std::fs::{metadata, remove_file, rename, File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::str::from_utf8; // For date formatting
 
@@ -23,7 +23,7 @@ fn main() {
 
         let mut writer = BufWriter::new(open_opotions);
 
-        let repo = Repository::open(line).unwrap();
+        let repo = Repository::open(&line).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
         revwalk.push_glob("refs/*").unwrap();
 
@@ -44,8 +44,20 @@ fn main() {
             });
         }
 
-        if metadata(&write_file_path).unwrap().len() == 0 {
+        let file_size = metadata(&write_file_path).unwrap().len();
+
+        if file_size == 0 {
             remove_file(&write_file_path).unwrap();
+        } else {
+            // Create new file name with size prepended
+            let new_file_path = format!(
+                "/home/yoyota/hobby/git-repos-analysis/{:0>10}_{}.txt",
+                file_size,
+                line.replace("/", "|"),
+            );
+
+            // Rename the file
+            rename(&write_file_path, &new_file_path).unwrap();
         }
     }
 }
@@ -81,8 +93,8 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
     let datetime = Utc.timestamp_opt(timestamp, 0).single().unwrap();
     let formatted_date = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
-    diff_lines.push(formatted_date);
-    diff_lines.push(commit.message().unwrap_or("").to_string());
+    diff_lines.push(formatted_date + "\n");
+    diff_lines.push(commit.message().unwrap_or("").to_string() + "\n");
 
     let filtered_diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
