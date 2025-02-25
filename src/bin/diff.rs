@@ -54,16 +54,13 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
     let old_tree = commit.parents().next().map(|p| p.tree().unwrap());
     let tree = commit.tree().unwrap();
 
-    let mut diff_options = DiffOptions::new();
     let diff = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
         .unwrap();
+
     let stats = diff.stats().unwrap();
-    filter_out_large_chang_files(stats)
-        .iter()
-        .for_each(|file_name| {
-            diff_options.pathspec(&file_name);
-        });
+
+    let mut diff_options = DiffOptions::new();
     diff_options
         .pathspec(" ")
         .context_lines(5)
@@ -71,6 +68,12 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
         .ignore_whitespace(true)
         .ignore_whitespace_change(true)
         .ignore_whitespace_eol(true);
+
+    filter_out_large_chang_files(stats)
+        .iter()
+        .for_each(|file_name| {
+            diff_options.pathspec(&file_name);
+        });
 
     let mut diff_lines = Vec::new();
 
@@ -81,13 +84,18 @@ fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
     diff_lines.push(formatted_date);
     diff_lines.push(commit.message().unwrap_or("").to_string());
 
-    let _ = diff.print(git2::DiffFormat::Patch, |_, _, line| {
+    let filtered_diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
+        .unwrap();
+
+    let _ = filtered_diff.print(git2::DiffFormat::Patch, |_, _, line| {
         if let Ok(text) = from_utf8(line.content()) {
-            diff_lines.push(format!("{}{}", line.origin(), text));
+            if !text.contains(&"\"image/png\"".to_string()) {
+                diff_lines.push(format!("{}{}", line.origin(), text));
+            }
         }
         true
     });
-
     diff_lines
 }
 
@@ -100,7 +108,9 @@ fn filter_out_large_chang_files(stats: DiffStats) -> Vec<String> {
         .to_string();
 
     let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
-    let lock_regex = Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json)$").unwrap();
+    let lock_regex =
+        Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
+            .unwrap();
 
     s.split('\n')
         .filter_map(|line| re.captures(line))
