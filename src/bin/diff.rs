@@ -2,7 +2,7 @@ use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Write};
+use std::io::{self, BufRead, BufWriter, Seek, SeekFrom, Write};
 use std::str::from_utf8; // For date formatting
 
 fn main() {
@@ -15,13 +15,13 @@ fn main() {
             "/home/yoyota/hobby/git-repos-analysis/{}.txt",
             line.replace("/", "|")
         );
-        let open_opotions = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .write(true)
             .open(&write_file_path)
             .unwrap();
 
-        let mut writer = BufWriter::new(open_opotions);
+        let mut writer = BufWriter::new(file);
 
         let repo = Repository::open(&line).unwrap();
         let mut revwalk = repo.revwalk().unwrap();
@@ -43,20 +43,30 @@ fn main() {
                 write!(writer, "{}", line).unwrap();
             });
         }
+        writer.flush().unwrap();
 
         let file_size = metadata(&write_file_path).unwrap().len();
 
         if file_size == 0 {
             remove_file(&write_file_path).unwrap();
         } else {
-            // Create new file name with size prepended
+            let mut file = writer.into_inner().unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+
+            let project_name = format!(
+                "project name: {}/{}\n",
+                line.rsplit('/').nth(1).unwrap_or(""),
+                line.rsplit('/').next().unwrap_or("")
+            );
+
+            file.write_all(project_name.as_bytes())
+                .expect("Failed to write");
+
             let new_file_path = format!(
                 "/home/yoyota/hobby/git-repos-analysis/{:0>10}_{}.txt",
                 file_size,
                 line.replace("/", "|"),
             );
-
-            // Rename the file
             rename(&write_file_path, &new_file_path).unwrap();
         }
     }
