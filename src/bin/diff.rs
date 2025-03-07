@@ -19,7 +19,7 @@ fn main() {
 fn process_repos() -> io::Result<()> {
     let file = File::open(CLONE_PATH_FILE)?;
     let reader = BufReader::new(file);
-    for line in reader.lines().take(10) {
+    for line in reader.lines() {
         let repo_path = line?;
         process_repo(repo_path.trim())?;
     }
