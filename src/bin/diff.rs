@@ -2,150 +2,201 @@ use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Seek, SeekFrom, Write};
-use std::str::from_utf8; // For date formatting
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::str::from_utf8;
+
+const CLONE_PATH_FILE: &str = "/home/yoyota/hobby/git-repos-analysis/clone_path.txt";
+const OUTPUT_DIR: &str = "/home/yoyota/hobby/git-repos-analysis";
 
 fn main() {
-    let file_path = "/home/yoyota/hobby/git-repos-analysis/clone_path.txt";
-    let file = File::open(file_path).unwrap();
-    let reader = io::BufReader::new(file);
-
-    for line in reader.lines().flatten() {
-        let write_file_path = format!(
-            "/home/yoyota/hobby/git-repos-analysis/{}.txt",
-            line.replace("/", "|")
-        );
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&write_file_path)
-            .unwrap();
-
-        let mut writer = BufWriter::new(file);
-
-        let repo = Repository::open(&line).unwrap();
-        let mut revwalk = repo.revwalk().unwrap();
-        revwalk.push_glob("refs/*").unwrap();
-
-        for commit in revwalk
-            .filter_map(|r| r.ok())
-            .filter_map(|oid| repo.find_commit(oid).ok())
-            .filter(|commit| {
-                commit
-                    .author()
-                    .name()
-                    .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
-            })
-            .filter(|commit| commit.parent_count() <= 1)
-        {
-            let lines = get_diff_lines(&repo, commit);
-            lines.iter().for_each(|line| {
-                write!(writer, "{}", line).unwrap();
-            });
-        }
-        writer.flush().unwrap();
-
-        let file_size = metadata(&write_file_path).unwrap().len();
-
-        if file_size == 0 {
-            remove_file(&write_file_path).unwrap();
-        } else {
-            let mut file = writer.into_inner().unwrap();
-            file.seek(SeekFrom::Start(0)).unwrap();
-
-            let project_name = format!(
-                "project name: {}/{}\n",
-                line.rsplit('/').nth(1).unwrap_or(""),
-                line.rsplit('/').next().unwrap_or("")
-            );
-
-            file.write_all(project_name.as_bytes())
-                .expect("Failed to write");
-
-            let new_file_path = format!(
-                "/home/yoyota/hobby/git-repos-analysis/{:0>10}_{}.txt",
-                file_size,
-                line.replace("/", "|"),
-            );
-            rename(&write_file_path, &new_file_path).unwrap();
-        }
+    if let Err(e) = process_repos() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 }
 
-fn get_diff_lines(repo: &Repository, commit: Commit) -> Vec<String> {
-    let old_tree = commit.parents().next().map(|p| p.tree().unwrap());
-    let tree = commit.tree().unwrap();
+/// Reads repository paths (up to 10) from the clone path file and processes each.
+fn process_repos() -> io::Result<()> {
+    let file = File::open(CLONE_PATH_FILE)?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(10) {
+        let repo_path = line?;
+        process_repo(repo_path.trim())?;
+    }
+    Ok(())
+}
 
+/// Processes a single repository by writing a header, processing commits,
+/// and then either renaming or removing the temporary output file.
+fn process_repo(repo_path: &str) -> io::Result<()> {
+    let tmp_filename = format!("{}/{}.txt", OUTPUT_DIR, repo_path.replace("/", "|"));
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&tmp_filename)?;
+    let mut writer = BufWriter::new(file);
+
+    let header_len = write_header(&mut writer, repo_path)?;
+    process_commits(&mut writer, repo_path)?;
+
+    writer.flush()?;
+    let file_size = metadata(&tmp_filename)?.len();
+
+    if file_size == header_len {
+        remove_file(&tmp_filename)?;
+    } else {
+        let new_filename = format!(
+            "{}/{:0>10}_{}.txt",
+            OUTPUT_DIR,
+            file_size,
+            repo_path.replace("/", "|")
+        );
+        rename(&tmp_filename, &new_filename)?;
+    }
+    Ok(())
+}
+
+/// Writes the header (project name) to the output file and returns its byte length.
+fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64> {
+    let header = format!(
+        "project name: {}/{}\n\n",
+        repo_path.rsplit('/').nth(1).unwrap_or(""),
+        repo_path.rsplit('/').next().unwrap_or("")
+    );
+    write!(writer, "{}", header)?;
+    Ok(header.as_bytes().len() as u64)
+}
+
+/// Opens the repository, iterates through commits, and writes diff output for matching commits.
+fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<()> {
+    let repo = Repository::open(repo_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    revwalk
+        .push_glob("refs/*")
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    for oid in revwalk.filter_map(Result::ok) {
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("");
+        if !(author_name == "yoyota" || author_name == "YongTak Yoo") {
+            continue;
+        }
+        if commit.parent_count() > 1 {
+            continue;
+        }
+        let diff_lines = get_diff_lines(&repo, &commit)?;
+        for line in diff_lines {
+            write!(writer, "{}", line)?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns a vector of strings containing the commit date, message, and diff output.
+fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>> {
+    let old_tree = commit
+        .parents()
+        .next()
+        .map(|parent| {
+            parent
+                .tree()
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        })
+        .transpose()?;
+    let tree = commit
+        .tree()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // First compute the diff stats without any options.
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
-        .unwrap();
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let stats = diff
+        .stats()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let stats = diff.stats().unwrap();
+    let mut opts = prepare_diff_options(&stats)?;
+    let commit_time = Utc
+        .timestamp_opt(commit.time().seconds(), 0)
+        .single()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid timestamp"))?;
+    let mut lines = vec![
+        format!(
+            "commit date: {}\n",
+            commit_time.format("%Y-%m-%d %H:%M:%S UTC")
+        ),
+        format!("commit message: {}\n", commit.message().unwrap_or("")),
+    ];
 
-    let mut diff_options = DiffOptions::new();
-    diff_options
-        .pathspec(" ")
-        .context_lines(5)
+    let diff_out = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    diff_out
+        .print(git2::DiffFormat::Patch, |_, _, line| {
+            if let Ok(text) = from_utf8(line.content()) {
+                if !text.contains("\"image/png\"") {
+                    lines.push(format!("{}{}", line.origin(), text));
+                }
+            }
+            true
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    Ok(lines)
+}
+
+/// Prepares and returns DiffOptions configured with context lines and file filtering.
+fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
+    let mut opts = DiffOptions::new();
+    opts.context_lines(5)
         .ignore_blank_lines(true)
         .ignore_whitespace(true)
         .ignore_whitespace_change(true)
         .ignore_whitespace_eol(true);
 
-    filter_out_large_chang_files(stats)
-        .iter()
-        .for_each(|file_name| {
-            diff_options.pathspec(&file_name);
-        });
-
-    let mut diff_lines = Vec::new();
-
-    let timestamp = commit.time().seconds();
-    let datetime = Utc.timestamp_opt(timestamp, 0).single().unwrap();
-    let formatted_date = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-
-    diff_lines.push(format!("commit date: {formatted_date}\n"));
-    let commit_message = commit.message().unwrap_or("");
-    diff_lines.push(format!("commit message: {commit_message}\n"));
-
-    let filtered_diff = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut diff_options))
-        .unwrap();
-
-    let _ = filtered_diff.print(git2::DiffFormat::Patch, |_, _, line| {
-        if let Ok(text) = from_utf8(line.content()) {
-            if !text.contains(&"\"image/png\"".to_string()) {
-                diff_lines.push(format!("{}{}", line.origin(), text));
-            }
-        }
-        true
-    });
-    diff_lines
+    let files = filter_out_large_change_files(stats)?;
+    for file in files {
+        opts.pathspec(&file);
+    }
+    Ok(opts)
 }
 
-fn filter_out_large_chang_files(stats: DiffStats) -> Vec<String> {
-    let s = stats
+/// Filters out files with large diffs or matching lock file patterns.
+fn filter_out_large_change_files(stats: &DiffStats) -> io::Result<Vec<String>> {
+    let buf = stats
         .to_buf(DiffStatsFormat::FULL, 100)
-        .unwrap()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let stats_str = buf
         .as_str()
-        .unwrap()
-        .to_string();
-
-    let re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap();
-    let lock_regex =
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid stats buffer"))?;
+    let file_re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)")
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let lock_re =
         Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
-            .unwrap();
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    s.split('\n')
-        .filter_map(|line| re.captures(line))
-        .filter_map(|caps| {
-            let file_name = caps[1].trim().to_string();
-            if lock_regex.is_match(&file_name) {
-                return None;
-            }
-            let changes_stat_str = caps[2].trim();
-            changes_stat_str
-                .parse::<u32>()
-                .map_or_else(|_| None, |cs| (cs < 1000).then(|| file_name))
+    let files = stats_str
+        .lines()
+        .filter_map(|line| {
+            file_re.captures(line).and_then(|caps| {
+                let file_name = caps.get(1)?.as_str().trim();
+                if lock_re.is_match(file_name) {
+                    return None;
+                }
+                let change_count = caps.get(2)?.as_str().trim().parse::<u32>().ok()?;
+                if change_count < 1000 {
+                    Some(file_name.to_string())
+                } else {
+                    None
+                }
+            })
         })
-        .collect()
+        .collect();
+    Ok(files)
 }
