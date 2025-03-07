@@ -26,8 +26,10 @@ fn process_repos() -> io::Result<()> {
     Ok(())
 }
 
-/// Processes a single repository by writing a header, processing commits,
-/// and then either renaming or removing the temporary output file.
+/// Processes a single repository:
+/// 1. Writes a header to a temporary file.
+/// 2. Processes commits to append diff output.
+/// 3. Checks file size and either renames or removes the file.
 fn process_repo(repo_path: &str) -> io::Result<()> {
     let tmp_filename = format!("{}/{}.txt", OUTPUT_DIR, repo_path.replace("/", "|"));
     let file = OpenOptions::new()
@@ -38,10 +40,9 @@ fn process_repo(repo_path: &str) -> io::Result<()> {
 
     let header_len = write_header(&mut writer, repo_path)?;
     process_commits(&mut writer, repo_path)?;
-
     writer.flush()?;
-    let file_size = metadata(&tmp_filename)?.len();
 
+    let file_size = metadata(&tmp_filename)?.len();
     if file_size == header_len {
         remove_file(&tmp_filename)?;
     } else {
@@ -56,7 +57,7 @@ fn process_repo(repo_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes the header (project name) to the output file and returns its byte length.
+/// Writes the project header to the writer and returns its byte length.
 fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64> {
     let header = format!(
         "project name: {}/{}\n\n",
@@ -67,7 +68,8 @@ fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64
     Ok(header.as_bytes().len() as u64)
 }
 
-/// Opens the repository, iterates through commits, and writes diff output for matching commits.
+/// Processes commits in the repository by iterating through them, validating each commit,
+/// and processing valid commits.
 fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<()> {
     let repo = Repository::open(repo_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let mut revwalk = repo
@@ -78,20 +80,22 @@ fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     for oid in revwalk.filter_map(Result::ok) {
-        let commit = match repo.find_commit(oid) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        if let Ok(commit) = repo.find_commit(oid) {
+            process_commit(&repo, &commit, writer)?;
+        }
+    }
+    Ok(())
+}
 
-        let author = commit.author();
-        let author_name = author.name().unwrap_or("");
-        if !(author_name == "yoyota" || author_name == "YongTak Yoo") {
-            continue;
-        }
-        if commit.parent_count() > 1 {
-            continue;
-        }
-        let diff_lines = get_diff_lines(&repo, &commit)?;
+/// Processes a single commit if it meets the validation criteria.
+/// If valid, retrieves the diff lines and writes them to the writer.
+fn process_commit(
+    repo: &Repository,
+    commit: &Commit,
+    writer: &mut BufWriter<File>,
+) -> io::Result<()> {
+    if is_commit_valid(commit) {
+        let diff_lines = get_diff_lines(repo, commit)?;
         for line in diff_lines {
             write!(writer, "{}", line)?;
         }
@@ -99,7 +103,16 @@ fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<
     Ok(())
 }
 
-/// Returns a vector of strings containing the commit date, message, and diff output.
+/// Determines if a commit is valid based on having at most one parent and a matching author.
+fn is_commit_valid(commit: &Commit) -> bool {
+    commit.parent_count() <= 1
+        && commit
+            .author()
+            .name()
+            .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
+}
+
+/// Returns diff lines for a commit including commit date, message, and diff output.
 fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>> {
     let old_tree = commit
         .parents()
@@ -114,7 +127,6 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
         .tree()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    // First compute the diff stats without any options.
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -127,6 +139,7 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
         .timestamp_opt(commit.time().seconds(), 0)
         .single()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid timestamp"))?;
+
     let mut lines = vec![
         format!(
             "commit date: {}\n",
@@ -138,20 +151,31 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
     let diff_out = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     diff_out
         .print(git2::DiffFormat::Patch, |_, _, line| {
-            if let Ok(text) = from_utf8(line.content()) {
-                if !text.contains("\"image/png\"") {
-                    lines.push(format!("{}{}", line.origin(), text));
-                }
+            if let Some(result) = process_diff_line(line) {
+                lines.push(result);
             }
             true
         })
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     Ok(lines)
 }
 
-/// Prepares and returns DiffOptions configured with context lines and file filtering.
+/// Processes a single diff line and returns a formatted string if it should be kept.
+/// Returns None if the line should be skipped.
+fn process_diff_line(line: git2::DiffLine) -> Option<String> {
+    let text = from_utf8(line.content()).ok()?;
+    if text.contains("\"image/png\"") {
+        None
+    } else {
+        Some(format!("{}{}", line.origin(), text))
+    }
+}
+
+/// Prepares diff options including context lines and file filtering.
 fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
     let mut opts = DiffOptions::new();
     opts.context_lines(5)
@@ -172,31 +196,36 @@ fn filter_out_large_change_files(stats: &DiffStats) -> io::Result<Vec<String>> {
     let buf = stats
         .to_buf(DiffStatsFormat::FULL, 100)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     let stats_str = buf
         .as_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid stats buffer"))?;
+
     let file_re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)")
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     let lock_re =
         Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let files = stats_str
+    let files: Vec<String> = stats_str
         .lines()
-        .filter_map(|line| {
-            file_re.captures(line).and_then(|caps| {
-                let file_name = caps.get(1)?.as_str().trim();
-                if lock_re.is_match(file_name) {
-                    return None;
-                }
-                let change_count = caps.get(2)?.as_str().trim().parse::<u32>().ok()?;
-                if change_count < 1000 {
-                    Some(file_name.to_string())
-                } else {
-                    None
-                }
-            })
-        })
+        .filter_map(|line| parse_stats_line(line, &file_re, &lock_re))
         .collect();
+
     Ok(files)
+}
+
+fn parse_stats_line(line: &str, file_re: &Regex, lock_re: &Regex) -> Option<String> {
+    let caps = file_re.captures(line)?;
+    let file_name = caps.get(1)?.as_str().trim();
+    if lock_re.is_match(file_name) {
+        return None;
+    }
+    let change_count = caps.get(2)?.as_str().trim().parse::<u32>().ok()?;
+    if change_count < 1000 {
+        Some(file_name.to_string())
+    } else {
+        None
+    }
 }
