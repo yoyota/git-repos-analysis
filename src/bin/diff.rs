@@ -112,17 +112,14 @@ fn is_commit_valid(commit: &Commit) -> bool {
             .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
 }
 
-/// Returns diff lines for a commit including commit date, message, and diff output.
 fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>> {
     let old_tree = commit
         .parents()
         .next()
-        .map(|parent| {
-            parent
-                .tree()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-        })
-        .transpose()?;
+        .map(|parent| parent.tree())
+        .transpose()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     let tree = commit
         .tree()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -130,11 +127,17 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
     let diff = repo
         .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     let stats = diff
         .stats()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     let mut opts = prepare_diff_options(&stats)?;
+
+    let diff_out = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     let commit_time = Utc
         .timestamp_opt(commit.time().seconds(), 0)
         .single()
@@ -148,13 +151,15 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
         format!("commit message: {}\n", commit.message().unwrap_or("")),
     ];
 
-    let diff_out = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut processor = DiffLineProcessor::new();
+    let mut current_file = String::new();
 
     diff_out
-        .print(git2::DiffFormat::Patch, |_, _, line| {
-            if let Some(result) = process_diff_line(line) {
+        .print(git2::DiffFormat::Patch, |delta, _, line| {
+            if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
+                current_file = path.to_string_lossy().to_string();
+            }
+            if let Some(result) = processor.process_diff_line(line, &current_file) {
                 lines.push(result);
             }
             true
@@ -162,17 +167,6 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     Ok(lines)
-}
-
-/// Processes a single diff line and returns a formatted string if it should be kept.
-/// Returns None if the line should be skipped.
-fn process_diff_line(line: git2::DiffLine) -> Option<String> {
-    let text = from_utf8(line.content()).ok()?;
-    if text.contains("\"image/png\"") {
-        None
-    } else {
-        Some(format!("{}{}", line.origin(), text))
-    }
 }
 
 /// Prepares diff options including context lines and file filtering.
@@ -227,5 +221,53 @@ fn parse_stats_line(line: &str, file_re: &Regex, lock_re: &Regex) -> Option<Stri
         Some(file_name.to_string())
     } else {
         None
+    }
+}
+
+use git2::DiffLine;
+
+struct DiffLineProcessor {
+    in_ipynb_source: bool,
+}
+
+impl DiffLineProcessor {
+    fn new() -> Self {
+        DiffLineProcessor {
+            in_ipynb_source: false,
+        }
+    }
+
+    fn process_diff_line(&mut self, line: DiffLine, file_path: &str) -> Option<String> {
+        let text = from_utf8(line.content()).ok()?;
+
+        // .ipynb 파일인지 먼저 확인
+        if file_path.ends_with(".ipynb") {
+            if text.trim().starts_with("\"source\": [") {
+                self.in_ipynb_source = true; // source 시작 부분 발견
+                return None; // 이 줄 자체는 제외하고 내부만 저장
+            } else if self.in_ipynb_source {
+                if text.trim().starts_with("]") {
+                    self.in_ipynb_source = false; // source 종료
+                    return None;
+                } else {
+                    // 소스 코드 내부의 한 줄을 깔끔하게 정리하여 반환
+                    let cleaned_line = text.trim().trim_matches('"').replace("\\n", "");
+                    return Some(format!("{}{}\n", line.origin(), cleaned_line));
+                }
+            } else {
+                return None; // source 외부는 모두 무시
+            }
+        }
+
+        // .ipynb 외의 다른 파일은 기존 방식대로 처리
+        if text.contains("\"image/png\"") {
+            None
+        } else {
+            match line.origin() {
+                'F' | 'H' | 'B' | ' ' => Some(text.to_string()),
+                '+' | '-' => Some(format!("{}{}", line.origin(), text)),
+                _ => None,
+            }
+        }
     }
 }
