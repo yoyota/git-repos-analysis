@@ -75,6 +75,11 @@ fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<
     let mut revwalk = repo
         .revwalk()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    revwalk
+        .set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
     revwalk
         .push_glob("refs/*")
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
