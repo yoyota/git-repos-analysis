@@ -4,6 +4,7 @@ use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::str::from_utf8;
+use std::vec;
 
 const CLONE_PATH_FILE: &str = "/home/yoyota/hobby/git-repos-analysis/clone_path.txt";
 const OUTPUT_DIR: &str = "/home/yoyota/hobby/git-repos-analysis";
@@ -178,6 +179,7 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
 fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
     let mut opts = DiffOptions::new();
     opts.context_lines(5)
+        .pathspec(" ")
         .ignore_blank_lines(true)
         .ignore_whitespace(true)
         .ignore_whitespace_change(true)
@@ -195,6 +197,10 @@ fn filter_out_large_change_files(stats: &DiffStats) -> io::Result<Vec<String>> {
     let buf = stats
         .to_buf(DiffStatsFormat::FULL, 100)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    if stats.insertions() + stats.deletions() > 2000 {
+        return Ok(vec![]);
+    }
 
     let stats_str = buf
         .as_str()
