@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let file_path = "/home/yoyota/hobby/gitlab-clone-to-local/projects.txt";
+    let file_path = "/home/yoyota/hobby/git-repos-analysis/projects.txt";
     let file = File::open(file_path).unwrap();
     let reader = io::BufReader::new(file);
 
