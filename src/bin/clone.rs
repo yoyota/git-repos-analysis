@@ -35,8 +35,8 @@ fn main() {
 
 fn create_clone_dir(project_url: String) -> PathBuf {
     let project_path = project_url.replace("https://gitlab.com/", "");
-    let base_path = Path::new("/home/yoyota/Downloads");
-    let clone_path = base_path.join(project_path);
+    let base_path = dirs::home_dir().expect("could not find home directory");
+    let clone_path = base_path.join("Documents").join(project_path);
     if clone_path.exists() {
         fs::remove_dir_all(&clone_path).unwrap();
     }
