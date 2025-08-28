@@ -3,6 +3,7 @@ use git2::{Commit, Diff, DiffOptions, DiffStats, DiffStatsFormat, Repository, Tr
 use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
 use std::str::from_utf8;
 use std::vec;
 
@@ -17,11 +18,22 @@ fn main() {
 }
 
 fn process_repos() -> io::Result<()> {
+    let mut diff_repo_path_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open("diff_repo_path.txt")
+        .unwrap();
     let file = File::open(CLONE_PATH_FILE)?;
     let reader = BufReader::new(file);
     for line in reader.lines() {
         let repo_path = line?;
-        process_repo(repo_path.trim())?;
+        let repo_path = repo_path.trim();
+        if Path::new(repo_path).is_dir() {
+            process_repo(repo_path)?;
+            writeln!(diff_repo_path_file, "{}", repo_path).unwrap();
+        } else {
+            println!("{} does not exist", repo_path);
+        }
     }
     Ok(())
 }
