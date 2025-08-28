@@ -4,7 +4,7 @@ use git2::{build::RepoBuilder, FetchOptions, RemoteCallbacks};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     let file_path = "/home/yoyota/hobby/git-repos-analysis/projects.txt";
