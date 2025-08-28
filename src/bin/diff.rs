@@ -1,5 +1,5 @@
 use chrono::{TimeZone, Utc};
-use git2::{Commit, DiffOptions, DiffStats, DiffStatsFormat, Repository};
+use git2::{Commit, Diff, DiffOptions, DiffStats, DiffStatsFormat, Repository, Tree};
 use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
@@ -16,7 +16,6 @@ fn main() {
     }
 }
 
-/// Reads repository paths (up to 10) from the clone path file and processes each.
 fn process_repos() -> io::Result<()> {
     let file = File::open(CLONE_PATH_FILE)?;
     let reader = BufReader::new(file);
@@ -27,10 +26,6 @@ fn process_repos() -> io::Result<()> {
     Ok(())
 }
 
-/// Processes a single repository:
-/// 1. Writes a header to a temporary file.
-/// 2. Processes commits to append diff output.
-/// 3. Checks file size and either renames or removes the file.
 fn process_repo(repo_path: &str) -> io::Result<()> {
     let tmp_filename = format!("{}/{}.txt", OUTPUT_DIR, repo_path.replace("/", "|"));
     let file = OpenOptions::new()
@@ -58,7 +53,6 @@ fn process_repo(repo_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes the project header to the writer and returns its byte length.
 fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64> {
     let header = format!(
         "project name: {}/{}\n\n",
@@ -69,99 +63,118 @@ fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64
     Ok(header.as_bytes().len() as u64)
 }
 
-/// Processes commits in the repository by iterating through them, validating each commit,
-/// and processing valid commits.
 fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<()> {
     let repo = Repository::open(repo_path).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    DiffProcessor::new(&repo).run(writer)
+}
 
-    revwalk
-        .set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+struct DiffProcessor<'repo> {
+    repo: &'repo Repository,
+}
 
-    revwalk
-        .push_glob("refs/*")
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    for oid in revwalk.filter_map(Result::ok) {
-        if let Ok(commit) = repo.find_commit(oid) {
-            process_commit(&repo, &commit, writer)?;
-        }
+impl<'repo> DiffProcessor<'repo> {
+    fn new(repo: &'repo Repository) -> Self {
+        Self { repo }
     }
-    Ok(())
-}
 
-/// Processes a single commit if it meets the validation criteria.
-/// If valid, retrieves the diff lines and writes them to the writer.
-fn process_commit(
-    repo: &Repository,
-    commit: &Commit,
-    writer: &mut BufWriter<File>,
-) -> io::Result<()> {
-    if is_commit_valid(commit) {
-        let diff_lines = get_diff_lines(repo, commit)?;
-        for line in diff_lines {
-            write!(writer, "{}", line)?;
+    fn run(&self, writer: &mut BufWriter<File>) -> io::Result<()> {
+        let mut revwalk = self
+            .repo
+            .revwalk()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        revwalk
+            .set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        revwalk
+            .push_glob("refs/*")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        for oid in revwalk.filter_map(Result::ok) {
+            if let Ok(commit) = self.repo.find_commit(oid) {
+                self.process_commit(&commit, writer)?;
+            }
         }
+        Ok(())
     }
-    Ok(())
-}
 
-/// Determines if a commit is valid based on having at most one parent and a matching author.
-fn is_commit_valid(commit: &Commit) -> bool {
-    commit.parent_count() <= 1
-        && commit
-            .author()
-            .name()
-            .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
-}
+    fn process_commit(
+        &self,
+        commit: &Commit<'repo>,
+        writer: &mut BufWriter<File>,
+    ) -> io::Result<()> {
+        if self.is_commit_valid(commit) {
+            let diff_lines = self.get_diff_lines(commit)?;
+            for line in diff_lines {
+                write!(writer, "{}", line)?;
+            }
+        }
+        Ok(())
+    }
 
-fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>> {
-    let old_tree = commit
-        .parents()
-        .next()
-        .map(|parent| parent.tree())
-        .transpose()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    fn is_commit_valid(&self, commit: &Commit<'repo>) -> bool {
+        commit.parent_count() <= 1
+            && commit
+                .author()
+                .name()
+                .map_or(false, |name| name == "yoyota" || name == "YongTak Yoo")
+    }
 
-    let tree = commit
-        .tree()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    fn get_diff_lines(&self, commit: &Commit<'repo>) -> io::Result<Vec<String>> {
+        let old_tree = self.get_parent_tree(commit)?;
+        let new_tree = commit
+            .tree()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let diff = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let diff = self
+            .repo
+            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let stats = diff
-        .stats()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let stats = diff
+            .stats()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut opts = self.prepare_diff_options(&stats)?;
 
-    let mut opts = prepare_diff_options(&stats)?;
+        let diff_with_opts = self
+            .repo
+            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), Some(&mut opts))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let diff_out = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut lines = self.format_commit_header(commit)?;
+        lines.extend(self.format_patch(&diff_with_opts)?);
 
-    let commit_time = Utc
-        .timestamp_opt(commit.time().seconds(), 0)
-        .single()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid timestamp"))?;
+        Ok(lines)
+    }
 
-    let mut lines = vec![
-        format!(
-            "commit date: {}\n",
-            commit_time.format("%Y-%m-%d %H:%M:%S UTC")
-        ),
-        format!("commit message: {}\n", commit.message().unwrap_or("")),
-    ];
+    fn get_parent_tree(&self, commit: &Commit<'repo>) -> io::Result<Option<Tree<'repo>>> {
+        commit
+            .parents()
+            .next()
+            .map(|p| p.tree())
+            .transpose()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
 
-    let mut processor = DiffLineProcessor::new();
-    let mut current_file = String::new();
+    fn format_commit_header(&self, commit: &Commit<'repo>) -> io::Result<Vec<String>> {
+        let commit_time = Utc
+            .timestamp_opt(commit.time().seconds(), 0)
+            .single()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid timestamp"))?;
+        Ok(vec![
+            format!(
+                "commit date: {}\n",
+                commit_time.format("%Y-%m-%d %H:%M:%S UTC")
+            ),
+            format!("commit message: {}\n", commit.message().unwrap_or("")),
+        ])
+    }
 
-    diff_out
-        .print(git2::DiffFormat::Patch, |delta, _, line| {
+    fn format_patch(&self, diff: &Diff) -> io::Result<Vec<String>> {
+        let mut lines = Vec::new();
+        let mut processor = DiffLineProcessor::new();
+        let mut current_file = String::new();
+
+        diff.print(git2::DiffFormat::Patch, |delta, _, line| {
             if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
                 current_file = path.to_string_lossy().to_string();
             }
@@ -172,66 +185,65 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
         })
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    Ok(lines)
-}
-
-/// Prepares diff options including context lines and file filtering.
-fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
-    let mut opts = DiffOptions::new();
-    opts.context_lines(5)
-        .pathspec(" ")
-        .ignore_blank_lines(true)
-        .ignore_whitespace(true)
-        .ignore_whitespace_change(true)
-        .ignore_whitespace_eol(true);
-
-    let files = filter_out_large_change_files(stats)?;
-    for file in files {
-        opts.pathspec(&file);
-    }
-    Ok(opts)
-}
-
-/// Filters out files with large diffs or matching lock file patterns.
-fn filter_out_large_change_files(stats: &DiffStats) -> io::Result<Vec<String>> {
-    let buf = stats
-        .to_buf(DiffStatsFormat::FULL, 100)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    if stats.insertions() + stats.deletions() > 2000 {
-        return Ok(vec![]);
+        Ok(lines)
     }
 
-    let stats_str = buf
-        .as_str()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid stats buffer"))?;
+    fn prepare_diff_options(&self, stats: &DiffStats) -> io::Result<DiffOptions> {
+        let mut opts = DiffOptions::new();
+        opts.context_lines(5)
+            .pathspec(" ")
+            .ignore_blank_lines(true)
+            .ignore_whitespace(true)
+            .ignore_whitespace_change(true)
+            .ignore_whitespace_eol(true);
 
-    let file_re = Regex::new(r"([^\|]+?)\s*\|\s*(\S+)")
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let files = self.filter_out_large_change_files(stats)?;
+        for file in files {
+            opts.pathspec(&file);
+        }
+        Ok(opts)
+    }
 
-    let lock_re =
-        Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
+    fn filter_out_large_change_files(&self, stats: &DiffStats) -> io::Result<Vec<String>> {
+        let buf = stats
+            .to_buf(DiffStatsFormat::FULL, 100)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let files: Vec<String> = stats_str
-        .lines()
-        .filter_map(|line| parse_stats_line(line, &file_re, &lock_re))
-        .collect();
+        if stats.insertions() + stats.deletions() > 2000 {
+            return Ok(vec![]);
+        }
 
-    Ok(files)
-}
+        let stats_str = buf
+            .as_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid stats buffer"))?;
 
-fn parse_stats_line(line: &str, file_re: &Regex, lock_re: &Regex) -> Option<String> {
-    let caps = file_re.captures(line)?;
-    let file_name = caps.get(1)?.as_str().trim();
-    if lock_re.is_match(file_name) {
-        return None;
+        let file_re = Regex::new(r"([^\\|]+?)\\s*\\|\\s*(\\S+)")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let lock_re = Regex::new(
+            r"(^|.*/)(yarn\\.lock|poetry\\.lock|package-lock\\.json|\\.terraform\\.lock\\.hcl)$",
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        let files: Vec<String> = stats_str
+            .lines()
+            .filter_map(|line| self.parse_stats_line(line, &file_re, &lock_re))
+            .collect();
+
+        Ok(files)
     }
-    let change_count = caps.get(2)?.as_str().trim().parse::<u32>().ok()?;
-    if change_count < 1000 {
-        Some(file_name.to_string())
-    } else {
-        None
+
+    fn parse_stats_line(&self, line: &str, file_re: &Regex, lock_re: &Regex) -> Option<String> {
+        let caps = file_re.captures(line)?;
+        let file_name = caps.get(1)?.as_str().trim();
+        if lock_re.is_match(file_name) {
+            return None;
+        }
+        let change_count = caps.get(2)?.as_str().trim().parse::<u32>().ok()?;
+        if change_count < 1000 {
+            Some(file_name.to_string())
+        } else {
+            None
+        }
     }
 }
 
@@ -249,36 +261,39 @@ impl DiffLineProcessor {
     }
 
     fn process_diff_line(&mut self, line: DiffLine, file_path: &str) -> Option<String> {
-        let text = from_utf8(line.content()).ok()?;
-
-        // .ipynb 파일인지 먼저 확인
         if file_path.ends_with(".ipynb") {
-            if text.trim().starts_with("\"source\": [") {
-                self.in_ipynb_source = true; // source 시작 부분 발견
-                return None; // 이 줄 자체는 제외하고 내부만 저장
-            } else if self.in_ipynb_source {
-                if text.trim().starts_with("]") {
-                    self.in_ipynb_source = false; // source 종료
-                    return None;
-                } else {
-                    // 소스 코드 내부의 한 줄을 깔끔하게 정리하여 반환
-                    let cleaned_line = text.trim().trim_matches('"').replace("\\n", "");
-                    return Some(format!("{}{}\n", line.origin(), cleaned_line));
-                }
-            } else {
-                return None; // source 외부는 모두 무시
-            }
+            return self.process_ipynb_line(line);
         }
 
-        // .ipynb 외의 다른 파일은 기존 방식대로 처리
+        let text = from_utf8(line.content()).ok()?;
         if text.contains("\"image/png\"") {
-            None
-        } else {
-            match line.origin() {
-                'F' | 'H' | 'B' | ' ' => Some(text.to_string()),
-                '+' | '-' => Some(format!("{}{}", line.origin(), text)),
-                _ => None,
+            return None;
+        }
+
+        match line.origin() {
+            'F' | 'H' | 'B' | ' ' => Some(text.to_string()),
+            '+' | '-' => Some(format!("{}{}", line.origin(), text)),
+            _ => None,
+        }
+    }
+
+    fn process_ipynb_line(&mut self, line: DiffLine) -> Option<String> {
+        let text = from_utf8(line.content()).ok()?;
+        let trimmed = text.trim();
+
+        if self.in_ipynb_source {
+            if trimmed.starts_with(']') {
+                self.in_ipynb_source = false;
+                None
+            } else {
+                let cleaned_line = trimmed.trim_matches('"').replace("\\n", "");
+                Some(format!("{}{}\n", line.origin(), cleaned_line))
             }
+        } else {
+            if trimmed.starts_with("\"source\": [") {
+                self.in_ipynb_source = true;
+            }
+            None
         }
     }
 }
