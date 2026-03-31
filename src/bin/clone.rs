@@ -1,14 +1,11 @@
-use git2::Repository;
-use git2::{build::RepoBuilder, FetchOptions, RemoteCallbacks};
-
+use git2::{build::RepoBuilder, FetchOptions, RemoteCallbacks, Repository};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let file_path = "/home/yoyota/hobby/git-repos-analysis/projects.txt";
-    let file = File::open(file_path).unwrap();
+    let file = File::open("/home/yoyota/hobby/git-repos-analysis/projects.txt").unwrap();
     let reader = io::BufReader::new(file);
 
     let fetch_options = create_fetch_options();
@@ -23,8 +20,8 @@ fn main() {
 
     for line in reader.lines() {
         let project_url = line.unwrap();
-        let clone_path = create_clone_dir(project_url.clone());
-        if let Some(repo) = repo_builder.clone(&project_url, &clone_path).ok() {
+        let clone_path = create_clone_dir(&project_url);
+        if let Ok(repo) = repo_builder.clone(&project_url, &clone_path) {
             fetch_all_remote_branch(repo);
             writeln!(clone_path_file, "{}", clone_path.to_string_lossy()).unwrap();
         } else {
@@ -33,10 +30,9 @@ fn main() {
     }
 }
 
-fn create_clone_dir(project_url: String) -> PathBuf {
+fn create_clone_dir(project_url: &str) -> PathBuf {
     let project_path = project_url.replace("https://gitlab.com/", "");
-    let base_path = Path::new("/home/yoyota/Downloads");
-    let clone_path = base_path.join(project_path);
+    let clone_path = Path::new("/home/yoyota/Downloads").join(project_path);
     if clone_path.exists() {
         fs::remove_dir_all(&clone_path).unwrap();
     }
@@ -64,6 +60,6 @@ fn create_fetch_options<'a>() -> FetchOptions<'a> {
     });
 
     let mut fetch_options = FetchOptions::new();
-    fetch_options.remote_callbacks(callbacks); // Transfer ownership of callbacks
-    return fetch_options;
+    fetch_options.remote_callbacks(callbacks);
+    fetch_options
 }
