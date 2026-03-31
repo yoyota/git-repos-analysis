@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1"
 chrono = "0.4.39"
 git2 = "0.20.0"
 regex = "1.11.1"
