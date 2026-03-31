@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tiktoken_rs::cl100k_base;
 use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 
 const MAX_TOKENS_PER_CHUNK: usize = 100_000;
 
@@ -239,16 +240,19 @@ Output ONLY the three versions with the delimiters, no additional commentary.
 "#;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
     if let Err(e) = run() {
         tracing::error!("{}", e);
         std::process::exit(1);
     }
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 }
 
 fn run() -> Result<(), String> {
@@ -380,8 +384,7 @@ fn split_into_chunks_by_tokens(
         let line_tokens = bpe.encode_with_special_tokens(&line_with_newline).len();
 
         if current_tokens + line_tokens > max_tokens && !current_chunk.is_empty() {
-            chunks.push(current_chunk.clone());
-            current_chunk.clear();
+            chunks.push(std::mem::take(&mut current_chunk));
             current_tokens = 0;
         }
 

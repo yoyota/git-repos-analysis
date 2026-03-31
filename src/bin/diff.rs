@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::sync::LazyLock;
 use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 
 static FILE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap());
@@ -35,16 +36,19 @@ struct Args {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
     if let Err(e) = run() {
         tracing::error!("{e}");
         std::process::exit(1);
     }
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 }
 
 fn run() -> Result<()> {
