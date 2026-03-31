@@ -1,8 +1,9 @@
+use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 use git2::{Commit, DiffLine, DiffOptions, DiffStats, DiffStatsFormat, Repository};
 use regex::Regex;
 use std::fs::{metadata, remove_file, rename, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::str::from_utf8;
 use std::sync::LazyLock;
 
@@ -17,10 +18,6 @@ static LOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-fn other_err(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e)
-}
-
 fn main() {
     if let Err(e) = process_repos() {
         eprintln!("Error: {}", e);
@@ -28,7 +25,7 @@ fn main() {
     }
 }
 
-fn process_repos() -> io::Result<()> {
+fn process_repos() -> Result<()> {
     let reader = BufReader::new(File::open(CLONE_PATH_FILE)?);
     for line in reader.lines() {
         process_repo(line?.trim())?;
@@ -36,7 +33,7 @@ fn process_repos() -> io::Result<()> {
     Ok(())
 }
 
-fn process_repo(repo_path: &str) -> io::Result<()> {
+fn process_repo(repo_path: &str) -> Result<()> {
     let tmp_filename = format!("{}/{}.txt", OUTPUT_DIR, repo_path.replace("/", "|"));
     let file = OpenOptions::new()
         .create(true)
@@ -63,7 +60,7 @@ fn process_repo(repo_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64> {
+fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> Result<u64> {
     let mut parts = repo_path.rsplit('/');
     let name = parts.next().unwrap_or("");
     let parent = parts.next().unwrap_or("");
@@ -72,13 +69,11 @@ fn write_header(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<u64
     Ok(header.len() as u64)
 }
 
-fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> io::Result<()> {
-    let repo = Repository::open(repo_path).map_err(other_err)?;
-    let mut revwalk = repo.revwalk().map_err(other_err)?;
-    revwalk
-        .set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)
-        .map_err(other_err)?;
-    revwalk.push_glob("refs/*").map_err(other_err)?;
+fn process_commits(writer: &mut BufWriter<File>, repo_path: &str) -> Result<()> {
+    let repo = Repository::open(repo_path)?;
+    let mut revwalk = repo.revwalk()?;
+    revwalk.set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)?;
+    revwalk.push_glob("refs/*")?;
 
     for oid in revwalk.filter_map(Result::ok) {
         if let Ok(commit) = repo.find_commit(oid) {
@@ -92,7 +87,7 @@ fn process_commit(
     repo: &Repository,
     commit: &Commit,
     writer: &mut BufWriter<File>,
-) -> io::Result<()> {
+) -> Result<()> {
     if !is_commit_valid(commit) {
         return Ok(());
     }
@@ -110,31 +105,26 @@ fn is_commit_valid(commit: &Commit) -> bool {
             .is_some_and(|name| name == "yoyota" || name == "YongTak Yoo")
 }
 
-fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>> {
+fn get_diff_lines(repo: &Repository, commit: &Commit) -> Result<Vec<String>> {
     let old_tree = commit
         .parents()
         .next()
         .map(|parent| parent.tree())
-        .transpose()
-        .map_err(other_err)?;
+        .transpose()?;
 
-    let tree = commit.tree().map_err(other_err)?;
+    let tree = commit.tree()?;
 
-    let diff = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)
-        .map_err(other_err)?;
+    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&tree), None)?;
 
-    let stats = diff.stats().map_err(other_err)?;
+    let stats = diff.stats()?;
     let mut opts = prepare_diff_options(&stats)?;
 
-    let diff_out = repo
-        .diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))
-        .map_err(other_err)?;
+    let diff_out = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))?;
 
     let commit_time = Utc
         .timestamp_opt(commit.time().seconds(), 0)
         .single()
-        .ok_or_else(|| other_err("Invalid timestamp"))?;
+        .context("Invalid timestamp")?;
 
     let mut lines = vec![
         format!(
@@ -147,22 +137,20 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> io::Result<Vec<String>>
     let mut processor = DiffLineProcessor::default();
     let mut current_file = String::new();
 
-    diff_out
-        .print(git2::DiffFormat::Patch, |delta, _, line| {
-            if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
-                current_file = path.to_string_lossy().to_string();
-            }
-            if let Some(result) = processor.process_diff_line(line, &current_file) {
-                lines.push(result);
-            }
-            true
-        })
-        .map_err(other_err)?;
+    diff_out.print(git2::DiffFormat::Patch, |delta, _, line| {
+        if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
+            current_file = path.to_string_lossy().to_string();
+        }
+        if let Some(result) = processor.process_diff_line(line, &current_file) {
+            lines.push(result);
+        }
+        true
+    })?;
 
     Ok(lines)
 }
 
-fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
+fn prepare_diff_options(stats: &DiffStats) -> Result<DiffOptions> {
     let mut opts = DiffOptions::new();
     opts.context_lines(5)
         .pathspec(" ")
@@ -177,15 +165,13 @@ fn prepare_diff_options(stats: &DiffStats) -> io::Result<DiffOptions> {
     Ok(opts)
 }
 
-fn filter_out_large_change_files(stats: &DiffStats) -> io::Result<Vec<String>> {
+fn filter_out_large_change_files(stats: &DiffStats) -> Result<Vec<String>> {
     if stats.insertions() + stats.deletions() > 2000 {
         return Ok(vec![]);
     }
 
-    let buf = stats.to_buf(DiffStatsFormat::FULL, 100).map_err(other_err)?;
-    let stats_str = buf
-        .as_str()
-        .ok_or_else(|| other_err("Invalid stats buffer"))?;
+    let buf = stats.to_buf(DiffStatsFormat::FULL, 100)?;
+    let stats_str = buf.as_str().context("Invalid stats buffer")?;
 
     Ok(stats_str.lines().filter_map(parse_stats_line).collect())
 }
