@@ -8,6 +8,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::sync::LazyLock;
+use tracing::{info, warn};
 
 static FILE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap());
@@ -34,8 +35,14 @@ struct Args {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     if let Err(e) = run() {
-        eprintln!("Error: {e}");
+        tracing::error!("{e}");
         std::process::exit(1);
     }
 }
@@ -54,9 +61,9 @@ fn run() -> Result<()> {
     let authors = detect_authors(&repo, args.authors.as_deref());
 
     if authors.is_empty() {
-        eprintln!("Warning: no author detected. Use --authors to specify.");
+        warn!("no author detected. Use --authors to specify.");
     } else {
-        println!("Filtering commits by: {}", authors.join(", "));
+        info!("filtering commits by: {}", authors.join(", "));
     }
 
     process_repo(&repo, &name, &output_dir, &authors)
@@ -100,9 +107,9 @@ fn process_repo(repo: &Repository, repo_name: &str, output_dir: &Path, authors: 
     let file_size = metadata(&out_path)?.len();
     if file_size == header_len {
         remove_file(&out_path)?;
-        println!("No matching commits found — no output written.");
+        info!("no matching commits found — no output written.");
     } else {
-        println!("Output: {}", out_path.display());
+        info!("output: {}", out_path.display());
     }
     Ok(())
 }

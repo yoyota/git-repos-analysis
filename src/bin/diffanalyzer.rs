@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tiktoken_rs::cl100k_base;
+use tracing::{info, warn};
 
 const MAX_TOKENS_PER_CHUNK: usize = 100_000;
 
@@ -238,8 +239,14 @@ Output ONLY the three versions with the delimiters, no additional commentary.
 "#;
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     if let Err(e) = run() {
-        eprintln!("Error: {}", e);
+        tracing::error!("{}", e);
         std::process::exit(1);
     }
 }
@@ -269,7 +276,7 @@ fn run() -> Result<(), String> {
 
     let bpe = cl100k_base().expect("Failed to initialize tokenizer");
 
-    println!("Processing: {}", input.display());
+    info!("processing: {}", input.display());
 
     let output = summarize_file(&input, &bpe, model)?;
     let [resume, summary, linkedin] = split_versions(&output);
@@ -278,7 +285,7 @@ fn run() -> Result<(), String> {
     write_output(&output_dir.join("summary.txt"), &summary)?;
     write_output(&output_dir.join("linkedin.txt"), &linkedin)?;
 
-    println!("\nDone. Output directory: {}", output_dir.display());
+    info!("done. output directory: {}", output_dir.display());
     Ok(())
 }
 
@@ -294,7 +301,7 @@ fn default_input() -> Result<PathBuf, String> {
 
 fn write_output(path: &Path, content: &str) -> Result<(), String> {
     fs::write(path, content).map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
-    println!("  → {}", path.display());
+    info!("→ {}", path.display());
     Ok(())
 }
 
@@ -317,32 +324,24 @@ fn summarize_file(
         fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     let token_count = bpe.encode_with_special_tokens(&file_content).len();
-    println!("  [INFO] File has {} tokens", token_count);
+    info!(token_count, "file token count");
 
     if token_count <= MAX_TOKENS_PER_CHUNK {
         return summarize_content_direct(&file_content, model);
     }
 
-    println!(
-        "  [INFO] Large file ({} tokens > {}), processing in chunks...",
-        token_count, MAX_TOKENS_PER_CHUNK
-    );
+    info!(token_count, max = MAX_TOKENS_PER_CHUNK, "large file, processing in chunks");
 
     let chunks = split_into_chunks_by_tokens(&file_content, bpe, MAX_TOKENS_PER_CHUNK);
-    println!("  [INFO] Split into {} chunks", chunks.len());
+    info!(chunks = chunks.len(), "split into chunks");
 
     let mut partial_summaries = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {
         let chunk_tokens = bpe.encode_with_special_tokens(chunk).len();
-        println!(
-            "  [INFO] Processing chunk {}/{} ({} tokens)...",
-            i + 1,
-            chunks.len(),
-            chunk_tokens
-        );
+        info!(chunk = i + 1, total = chunks.len(), chunk_tokens, "processing chunk");
         match summarize_chunk(chunk, model) {
             Ok(summary) => partial_summaries.push(summary),
-            Err(e) => eprintln!("  [WARN] Chunk {} failed: {}", i + 1, e),
+            Err(e) => warn!(chunk = i + 1, error = %e, "chunk failed"),
         }
     }
 
@@ -350,7 +349,7 @@ fn summarize_file(
         return Err("All chunks failed to process".to_string());
     }
 
-    println!("  [INFO] Merging {} partial summaries...", partial_summaries.len());
+    info!(count = partial_summaries.len(), "merging partial summaries");
     merge_summaries(&partial_summaries, model)
 }
 
