@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 use clap::Parser;
-use git2::{Commit, DiffLine, DiffOptions, DiffStats, DiffStatsFormat, Repository};
+use git2::{
+    Commit, DiffLine, DiffOptions, DiffStats, DiffStatsFormat, Repository,
+};
 use regex::Regex;
-use std::fs::{self, metadata, remove_file, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::fs::{self, remove_file, File};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::str::from_utf8;
 use std::sync::LazyLock;
@@ -15,20 +17,23 @@ static FILE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([^\|]+?)\s*\|\s*(\S+)").unwrap());
 
 static LOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(^|.*/)(yarn\.lock|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
+    Regex::new(r"(^|.*/)(yarn\.lock|Cargo.toml|poetry\.lock|package-lock\.json|\.terraform\.lock\.hcl)$")
         .unwrap()
 });
 
 #[derive(Parser)]
-#[command(name = "diff", about = "Extract filtered git diffs for resume generation")]
+#[command(
+    name = "diff",
+    about = "Extract filtered git diffs for resume generation"
+)]
 struct Args {
     /// Path to the git repository to analyze
     #[arg(short, long, default_value = ".")]
     repo: PathBuf,
 
-    /// Output directory (default: ~/Downloads/{repo-name})
+    /// Save output to a file path (default: stdout)
     #[arg(short, long)]
-    output: Option<PathBuf>,
+    save: Option<PathBuf>,
 
     /// Comma-separated author names to filter commits (default: git config user.name)
     #[arg(long)]
@@ -46,7 +51,8 @@ fn main() {
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 }
@@ -54,14 +60,8 @@ fn init_tracing() {
 fn run() -> Result<()> {
     let args = Args::parse();
 
-    let name = repo_name(&args.repo)?;
-    let output_dir = match args.output {
-        Some(p) => p,
-        None => default_output_dir(&name)?,
-    };
-    fs::create_dir_all(&output_dir)?;
-
     let repo = Repository::open(&args.repo)?;
+    let name = repo_name(&args.repo)?;
     let authors = detect_authors(&repo, args.authors.as_deref());
 
     if authors.is_empty() {
@@ -70,7 +70,20 @@ fn run() -> Result<()> {
         info!("filtering commits by: {}", authors.join(", "));
     }
 
-    process_repo(&repo, &name, &output_dir, &authors)
+    match args.save {
+        Some(ref path) => {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                fs::create_dir_all(parent)?;
+            }
+            let mut writer = BufWriter::new(File::create(path)?);
+            process_repo(&repo, &name, &mut writer, &authors, Some(path))
+        }
+        None => {
+            let stdout = io::stdout();
+            let mut writer = BufWriter::new(stdout.lock());
+            process_repo(&repo, &name, &mut writer, &authors, None)
+        }
+    }
 }
 
 fn repo_name(repo_path: &Path) -> Result<String> {
@@ -81,75 +94,81 @@ fn repo_name(repo_path: &Path) -> Result<String> {
         .context("Cannot determine repo name from path")
 }
 
-fn default_output_dir(name: &str) -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME env var not set")?;
-    Ok(PathBuf::from(home).join("Downloads").join(name))
-}
-
-fn detect_authors(repo: &Repository, override_authors: Option<&str>) -> Vec<String> {
+fn detect_authors(
+    repo: &Repository,
+    override_authors: Option<&str>,
+) -> Vec<String> {
     if let Some(s) = override_authors {
         return s.split(',').map(|a| a.trim().to_string()).collect();
     }
-    let mut authors = Vec::new();
-    if let Ok(config) = repo.config() {
-        if let Ok(name) = config.get_string("user.name") {
-            authors.push(name);
-        }
-    }
-    authors
+    repo.config()
+        .ok()
+        .and_then(|config| config.get_string("user.name").ok())
+        .into_iter()
+        .collect()
 }
 
-fn process_repo(repo: &Repository, repo_name: &str, output_dir: &Path, authors: &[String]) -> Result<()> {
-    let out_path = output_dir.join("diff.txt");
-    let file = OpenOptions::new().create(true).write(true).open(&out_path)?;
-    let mut writer = BufWriter::new(file);
-
-    let header_len = write_header(&mut writer, repo_name)?;
-    process_commits(&mut writer, repo, authors)?;
+fn process_repo(
+    repo: &Repository,
+    repo_name: &str,
+    writer: &mut impl Write,
+    authors: &[String],
+    save_path: Option<&Path>,
+) -> Result<()> {
+    write_header(writer, repo_name)?;
+    let found = process_commits(writer, repo, authors)?;
     writer.flush()?;
 
-    let file_size = metadata(&out_path)?.len();
-    if file_size == header_len {
-        remove_file(&out_path)?;
+    if !found {
+        if let Some(path) = save_path {
+            remove_file(path)?;
+        }
         info!("no matching commits found — no output written.");
-    } else {
-        info!("output: {}", out_path.display());
+    } else if let Some(path) = save_path {
+        info!("saved to: {}", path.display());
     }
     Ok(())
 }
 
-fn write_header(writer: &mut BufWriter<File>, repo_name: &str) -> Result<u64> {
-    let header = format!("project name: {repo_name}\n\n");
-    write!(writer, "{header}")?;
-    Ok(header.len() as u64)
+fn write_header(writer: &mut impl Write, repo_name: &str) -> Result<()> {
+    write!(writer, "project name: {repo_name}\n\n")?;
+    Ok(())
 }
 
-fn process_commits(writer: &mut BufWriter<File>, repo: &Repository, authors: &[String]) -> Result<()> {
+fn process_commits(
+    writer: &mut impl Write,
+    repo: &Repository,
+    authors: &[String],
+) -> Result<bool> {
     let mut revwalk = repo.revwalk()?;
     revwalk.set_sorting(git2::Sort::TIME | git2::Sort::REVERSE)?;
     revwalk.push_glob("refs/*")?;
 
-    for oid in revwalk.filter_map(Result::ok) {
-        if let Ok(commit) = repo.find_commit(oid) {
-            process_commit(repo, &commit, writer, authors)?;
+    let mut found = false;
+    let commits = revwalk
+        .filter_map(Result::ok)
+        .filter_map(|oid| repo.find_commit(oid).ok());
+    for commit in commits {
+        if process_commit(repo, &commit, writer, authors)? {
+            found = true;
         }
     }
-    Ok(())
+    Ok(found)
 }
 
 fn process_commit(
     repo: &Repository,
     commit: &Commit,
-    writer: &mut BufWriter<File>,
+    writer: &mut impl Write,
     authors: &[String],
-) -> Result<()> {
+) -> Result<bool> {
     if !is_commit_valid(commit, authors) {
-        return Ok(());
+        return Ok(false);
     }
     for line in get_diff_lines(repo, commit)? {
         write!(writer, "{}", line)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 fn is_commit_valid(commit: &Commit, authors: &[String]) -> bool {
@@ -173,7 +192,11 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> Result<Vec<String>> {
     let stats = diff.stats()?;
     let mut opts = prepare_diff_options(&stats)?;
 
-    let diff_out = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    let diff_out = repo.diff_tree_to_tree(
+        old_tree.as_ref(),
+        Some(&tree),
+        Some(&mut opts),
+    )?;
 
     let commit_time = Utc
         .timestamp_opt(commit.time().seconds(), 0)
@@ -192,7 +215,8 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> Result<Vec<String>> {
     let mut current_file = String::new();
 
     diff_out.print(git2::DiffFormat::Patch, |delta, _, line| {
-        if let Some(path) = delta.new_file().path().or(delta.old_file().path()) {
+        if let Some(path) = delta.new_file().path().or(delta.old_file().path())
+        {
             current_file = path.to_string_lossy().to_string();
         }
         if let Some(result) = processor.process_diff_line(line, &current_file) {
@@ -246,7 +270,11 @@ struct DiffLineProcessor {
 }
 
 impl DiffLineProcessor {
-    fn process_diff_line(&mut self, line: DiffLine, file_path: &str) -> Option<String> {
+    fn process_diff_line(
+        &mut self,
+        line: DiffLine,
+        file_path: &str,
+    ) -> Option<String> {
         let text = from_utf8(line.content()).ok()?;
 
         if !file_path.ends_with(".ipynb") {
