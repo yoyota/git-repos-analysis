@@ -29,11 +29,11 @@ struct Args {
     effort: Option<String>,
 }
 
-const PROMPT_TEMPLATE: &str = r#"You are a senior technical resume writer. Analyze the following git diff content and produce THREE versions of a project summary in a single output.
+const PROMPT_TEMPLATE: &str = r#"You are a senior technical resume writer. Analyze the following git diff content and produce TWO versions of a project summary in a single output.
 
 Carefully examine: file paths, package names, import statements, frameworks, APIs, database schemas, config files, commit messages, test files, CI/CD configs, and code patterns. Extract every piece of technical evidence you can find.
 
-Output ALL THREE versions below, separated by the exact delimiter shown. Entirely in English.
+Output BOTH versions below, separated by the exact delimiter shown. Entirely in English.
 
 ================================================================================
 VERSION 1: PROFESSIONAL RESUME
@@ -111,27 +111,15 @@ Note any evidence of:
 - Error handling and logging approaches
 - Security considerations
 
-================================================================================
-VERSION 3: LINKEDIN PROJECT
-================================================================================
-
-# <Project Name>
-<Your Role> | MM/YYYY – MM/YYYY
-
-<2-3 sentences: what you built, your specific contributions, and one standout outcome. Write in first person, professional but conversational — suitable for LinkedIn's project section.>
-
-**Tech:** Language, Framework, Key Libraries, Database, Infrastructure
-
 Rules:
 - Only claim what is directly evidenced in the diffs. Do not fabricate features or technologies.
 - Version 1 should be polished and human-readable — ready to paste into a resume.
 - Version 2 should be verbose and thorough — it will be consumed by an LLM for generating tailored resumes, cover letters, and interview prep. More detail is better.
-- Version 3 should be concise and LinkedIn-optimized — 2-3 sentences max, first person.
 - When uncertain about something, phrase it as "appears to" or "likely" rather than omitting it.
 - Include raw technical details (class names, endpoint paths, config keys) in Version 2.
 - If the diffs are too small for a full analysis, still extract every detail possible and note the limited scope.
 
-Output ONLY the three versions with the delimiters, no additional commentary.
+Output ONLY the two versions with the delimiters, no additional commentary.
 
 === GIT DIFF CONTENT STARTS HERE ===
 "#;
@@ -157,11 +145,11 @@ Output detailed structured bullet points under each category. Include specific c
 === GIT DIFF CHUNK ===
 "#;
 
-const MERGE_PROMPT_TEMPLATE: &str = r#"You are a senior technical resume writer. Based on the following partial analyses from different chunks of the same git diff file, create THREE versions of a unified project summary.
+const MERGE_PROMPT_TEMPLATE: &str = r#"You are a senior technical resume writer. Based on the following partial analyses from different chunks of the same git diff file, create TWO versions of a unified project summary.
 
 Deduplicate, synthesize, and enrich the information. Combine overlapping details and resolve any contradictions.
 
-Output ALL THREE versions below, separated by the exact delimiter shown. Entirely in English.
+Output BOTH versions below, separated by the exact delimiter shown. Entirely in English.
 
 ================================================================================
 VERSION 1: PROFESSIONAL RESUME
@@ -219,26 +207,14 @@ List every evidenced technology organized by category:
 ## Code Quality Indicators
 Evidence of: testing practices, documentation, error handling, logging, security considerations.
 
-================================================================================
-VERSION 3: LINKEDIN PROJECT
-================================================================================
-
-# <Project Name>
-<Your Role> | MM/YYYY – MM/YYYY
-
-<2-3 sentences: what you built, your specific contributions, and one standout outcome. Write in first person, professional but conversational.>
-
-**Tech:** Language, Framework, Key Libraries, Database, Infrastructure
-
 Rules:
 - Only claim what is directly evidenced in the partial analyses. Do not fabricate.
 - Version 1 should be polished and human-readable — ready to paste into a resume.
 - Version 2 should be verbose and thorough — more detail is better for downstream LLM consumption.
-- Version 3 should be concise and LinkedIn-optimized — 2-3 sentences max, first person.
 - When uncertain, phrase as "appears to" or "likely" rather than omitting.
 - Include raw technical details (class names, endpoint paths, config keys) in Version 2.
 
-Output ONLY the three versions with the delimiters, no additional commentary.
+Output ONLY the two versions with the delimiters, no additional commentary.
 
 === PARTIAL SUMMARIES ===
 "#;
@@ -275,10 +251,7 @@ fn run() -> Result<(), String> {
         info!("processing: stdin");
         (buf, cwd)
     } else {
-        let input = match args.input {
-            Some(p) => p,
-            None => default_input()?,
-        };
+        let input = args.input.map_or_else(default_input, Ok)?;
         if !input.exists() {
             return Err(format!("Input file not found: {}", input.display()));
         }
@@ -299,11 +272,10 @@ fn run() -> Result<(), String> {
 
     let output = summarize_content(&content, &bpe, model, effort)?;
     write_output(&output_dir.join("debug_raw_output.txt"), &output)?;
-    let [resume, summary, linkedin] = split_versions(&output);
+    let [resume, summary] = split_versions(&output);
 
     write_output(&output_dir.join("resume.txt"), &resume)?;
     write_output(&output_dir.join("summary.txt"), &summary)?;
-    write_output(&output_dir.join("linkedin.txt"), &linkedin)?;
 
     info!("done. output directory: {}", output_dir.display());
     Ok(())
@@ -325,14 +297,13 @@ fn write_output(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn split_versions(output: &str) -> [String; 3] {
+fn split_versions(output: &str) -> [String; 2] {
     const SEP: &str = "================================================================================";
     let parts: Vec<&str> = output.split(SEP).collect();
     // parts[1] = VERSION 1 header, parts[2] = version 1 content
     // parts[3] = VERSION 2 header, parts[4] = version 2 content
-    // parts[5] = VERSION 3 header, parts[6] = version 3 content
     let get = |i: usize| parts.get(i).unwrap_or(&"").trim().to_string();
-    [get(2), get(4), get(6)]
+    [get(2), get(4)]
 }
 
 fn summarize_content(
@@ -434,9 +405,7 @@ fn build_claude_args(model: Option<&str>, effort: Option<&str>) -> Vec<String> {
 
 fn call_claude(prompt: &str, model: Option<&str>, effort: Option<&str>) -> Result<String, String> {
     let mut cmd = Command::new("claude");
-    for arg in build_claude_args(model, effort) {
-        cmd.arg(arg);
-    }
+    cmd.args(build_claude_args(model, effort));
 
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -481,15 +450,6 @@ fn call_claude(prompt: &str, model: Option<&str>, effort: Option<&str>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---------------------------------------------------------------------------
-    // build_claude_args tests
-    //
-    // These tests call `build_claude_args(model, effort) -> Vec<String>`, a pure
-    // helper that must be extracted from `call_claude` as part of the feature
-    // implementation.  The function does NOT exist yet, so every test here will
-    // fail to compile (RED).
-    // ---------------------------------------------------------------------------
 
     mod build_claude_args_tests {
         use super::*;
@@ -611,46 +571,21 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Propagation tests
-    //
-    // These tests verify that effort threads through the internal call chain.
-    // They call the updated signatures defined in the plan:
-    //   summarize_content_direct(content, model, effort)
-    //   summarize_chunk(chunk, model, effort)
-    //   merge_summaries(summaries, model, effort)
-    //
-    // Because these functions will spawn a real process we cannot run them
-    // end-to-end without a real `claude` binary.  Instead we test that the
-    // **updated signatures exist and accept an effort parameter** — the mere
-    // fact that the compiler accepts the call is the assertion.  If the
-    // signatures have not been updated the test will fail to compile (RED).
-    // ---------------------------------------------------------------------------
-
     mod propagation_signature_tests {
         use super::*;
 
-        // Verify that summarize_content_direct accepts an effort parameter.
-        // We pass a dummy prompt; the call will fail at runtime (no claude binary
-        // in CI) but that is acceptable — a compile error is the RED signal.
         #[test]
         fn summarize_content_direct_accepts_effort_param() {
-            // This must NOT compile with the old two-parameter signature.
-            // It must compile once the new three-parameter signature is added.
             let result = summarize_content_direct("test prompt", None, Some("high"));
-            // We do not assert on the Ok/Err value — only that it compiles and
-            // returns a Result<String, String>.
             let _: Result<String, String> = result;
         }
 
-        // Verify that summarize_chunk accepts an effort parameter.
         #[test]
         fn summarize_chunk_accepts_effort_param() {
             let result = summarize_chunk("test chunk", None, Some("max"));
             let _: Result<String, String> = result;
         }
 
-        // Verify that merge_summaries accepts an effort parameter.
         #[test]
         fn merge_summaries_accepts_effort_param() {
             let summaries = vec!["partial summary A".to_string()];
@@ -659,55 +594,23 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Error-path tests
-    //
-    // These tests exercise error handling by invoking call_claude with a model
-    // and effort value against a command that will exit non-zero.  We use a
-    // fake binary path that does not exist so that spawn itself fails, which
-    // tests the existing error-surfacing path.
-    //
-    // For the rate-limit detection test we rely on the pure `build_claude_args`
-    // helper plus a separate mock-output helper so no real process is spawned.
-    // ---------------------------------------------------------------------------
-
     mod error_path_tests {
         use super::*;
 
-        // Scenario: call_claude (updated 3-arg signature) surfaces non-zero exit
-        // when effort is present.  We cannot easily mock the process here without
-        // a fake binary, so we assert the updated call_claude signature accepts
-        // three parameters (compile-time RED check) and that it returns Err when
-        // `claude` is not on PATH.
         #[test]
         fn call_claude_three_arg_signature_exists() {
-            // The old signature is call_claude(prompt, model).
-            // The new signature must be call_claude(prompt, model, effort).
-            // This test fails to compile until the signature is updated.
             let result = call_claude("prompt", None, Some("high"));
-            // Regardless of whether claude is installed, we only check the type.
             let _: Result<String, String> = result;
         }
 
-        // Scenario: rate-limit detection still works when --effort is present.
-        // We verify this by checking that build_claude_args with effort still
-        // produces args that do NOT interfere with the "hit your limit" detection
-        // logic (which lives in the stdout/stderr check, unrelated to args).
-        // The test is a compile-time check that build_claude_args returns a
-        // Vec<String> and a runtime assertion that "--effort" is present.
         #[test]
         fn rate_limit_detection_unaffected_by_effort_flag() {
-            // build_claude_args must exist and return Vec<String>
             let args: Vec<String> = build_claude_args(None, Some("high"));
-            // The rate-limit detection checks stdout/stderr content, not args.
-            // We simply confirm the args do not accidentally contain the
-            // rate-limit sentinel string.
             assert!(
                 !args.iter().any(|a| a.contains("hit your limit")),
                 "args must not contain rate-limit sentinel: {:?}",
                 args
             );
-            // And that --effort is still present so the feature is active.
             assert!(
                 args.contains(&"--effort".to_string()),
                 "expected --effort in args: {:?}",
