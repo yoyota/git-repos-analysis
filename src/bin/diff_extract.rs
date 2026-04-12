@@ -71,21 +71,16 @@ fn run() -> Result<()> {
         info!("filtering commits by: {}", authors.join(", "));
     }
 
-    match args.save {
-        Some(ref path) => {
-            if let Some(parent) =
-                path.parent().filter(|p| !p.as_os_str().is_empty())
-            {
-                fs::create_dir_all(parent)?;
-            }
-            let mut writer = BufWriter::new(File::create(path)?);
-            process_repo(&repo, &name, &mut writer, &authors, Some(path))
+    if let Some(path) = &args.save {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
         }
-        None => {
-            let stdout = io::stdout();
-            let mut writer = BufWriter::new(stdout.lock());
-            process_repo(&repo, &name, &mut writer, &authors, None)
-        }
+        let mut writer = BufWriter::new(File::create(path)?);
+        process_repo(&repo, &name, &mut writer, &authors, Some(path))
+    } else {
+        let stdout = io::stdout();
+        let mut writer = BufWriter::new(stdout.lock());
+        process_repo(&repo, &name, &mut writer, &authors, None)
     }
 }
 
@@ -228,7 +223,7 @@ fn get_diff_lines(repo: &Repository, commit: &Commit) -> Result<Vec<String>> {
     diff_out.print(git2::DiffFormat::Patch, |delta, _, line| {
         if let Some(path) = delta.new_file().path().or(delta.old_file().path())
         {
-            current_file = path.to_string_lossy().to_string();
+            current_file = path.to_string_lossy().into_owned();
         }
         if let Some(result) = processor.process_diff_line(line, &current_file) {
             lines.push(result);

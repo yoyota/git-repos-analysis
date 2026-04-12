@@ -10,7 +10,10 @@ use tracing_subscriber::EnvFilter;
 const MAX_TOKENS_PER_CHUNK: usize = 100_000;
 
 #[derive(Parser, Debug)]
-#[command(name = "diffanalyzer", about = "Generate resume/LinkedIn text from git diff")]
+#[command(
+    name = "diffanalyzer",
+    about = "Generate resume/LinkedIn text from git diff"
+)]
 struct Args {
     /// Input diff.txt file (default: ~/Downloads/{cwd-name}/diff.txt)
     #[arg(short, long)]
@@ -288,7 +291,10 @@ fn default_input() -> Result<PathBuf, String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| "Cannot determine repo name from cwd".to_string())?;
     let home = std::env::var("HOME").map_err(|_| "HOME env var not set".to_string())?;
-    Ok(PathBuf::from(home).join("Downloads").join(name).join("diff.txt"))
+    Ok(PathBuf::from(home)
+        .join("Downloads")
+        .join(name)
+        .join("diff.txt"))
 }
 
 fn write_output(path: &Path, content: &str) -> Result<(), String> {
@@ -298,7 +304,8 @@ fn write_output(path: &Path, content: &str) -> Result<(), String> {
 }
 
 fn split_versions(output: &str) -> [String; 2] {
-    const SEP: &str = "================================================================================";
+    const SEP: &str =
+        "================================================================================";
     let parts: Vec<&str> = output.split(SEP).collect();
     // parts[1] = VERSION 1 header, parts[2] = version 1 content
     // parts[3] = VERSION 2 header, parts[4] = version 2 content
@@ -319,7 +326,11 @@ fn summarize_content(
         return summarize_content_direct(file_content, model, effort);
     }
 
-    info!(token_count, max = MAX_TOKENS_PER_CHUNK, "large file, processing in chunks");
+    info!(
+        token_count,
+        max = MAX_TOKENS_PER_CHUNK,
+        "large file, processing in chunks"
+    );
 
     let chunks = split_into_chunks_by_tokens(file_content, bpe, MAX_TOKENS_PER_CHUNK);
     info!(chunks = chunks.len(), "split into chunks");
@@ -327,7 +338,12 @@ fn summarize_content(
     let mut partial_summaries = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {
         let chunk_tokens = bpe.encode_with_special_tokens(chunk).len();
-        info!(chunk = i + 1, total = chunks.len(), chunk_tokens, "processing chunk");
+        info!(
+            chunk = i + 1,
+            total = chunks.len(),
+            chunk_tokens,
+            "processing chunk"
+        );
         match summarize_chunk(chunk, model, effort) {
             Ok(summary) => partial_summaries.push(summary),
             Err(e) => warn!(chunk = i + 1, error = %e, "chunk failed"),
@@ -350,8 +366,16 @@ fn summarize_content_direct(
     call_claude(&format!("{}{}", PROMPT_TEMPLATE, content), model, effort)
 }
 
-fn summarize_chunk(chunk: &str, model: Option<&str>, effort: Option<&str>) -> Result<String, String> {
-    call_claude(&format!("{}{}", CHUNK_PROMPT_TEMPLATE, chunk), model, effort)
+fn summarize_chunk(
+    chunk: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<String, String> {
+    call_claude(
+        &format!("{}{}", CHUNK_PROMPT_TEMPLATE, chunk),
+        model,
+        effort,
+    )
 }
 
 fn merge_summaries(
@@ -360,7 +384,11 @@ fn merge_summaries(
     effort: Option<&str>,
 ) -> Result<String, String> {
     let combined = summaries.join("\n\n---\n\n");
-    call_claude(&format!("{}{}", MERGE_PROMPT_TEMPLATE, combined), model, effort)
+    call_claude(
+        &format!("{}{}", MERGE_PROMPT_TEMPLATE, combined),
+        model,
+        effort,
+    )
 }
 
 fn split_into_chunks_by_tokens(
@@ -373,7 +401,7 @@ fn split_into_chunks_by_tokens(
     let mut current_tokens = 0;
 
     for line in content.lines() {
-        let line_with_newline = format!("{}\n", line);
+        let line_with_newline = format!("{line}\n");
         let line_tokens = bpe.encode_with_special_tokens(&line_with_newline).len();
 
         if current_tokens + line_tokens > max_tokens && !current_chunk.is_empty() {
@@ -431,13 +459,14 @@ fn call_claude(prompt: &str, model: Option<&str>, effort: Option<&str>) -> Resul
         let exit_code = output
             .status
             .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |c| c.to_string());
 
         if stdout.contains("hit your limit") || stderr.contains("hit your limit") {
             return Err(format!("RATE_LIMIT: Claude exited with code {exit_code}."));
         }
-        return Err(format!("Claude exited with code {exit_code}.\nstdout: {stdout}\nstderr: {stderr}"));
+        return Err(format!(
+            "Claude exited with code {exit_code}.\nstdout: {stdout}\nstderr: {stderr}"
+        ));
     }
 
     let result = String::from_utf8_lossy(&output.stdout).trim().to_string();

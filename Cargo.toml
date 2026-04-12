@@ -13,5 +13,13 @@ tiktoken-rs = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[[bin]]
+name = "diff-extract"
+path = "src/bin/diff_extract.rs"
+
+[[bin]]
+name = "diff-analyze"
+path = "src/bin/diff_analyze.rs"
+
 [dev-dependencies]
 tempfile = "3"
