@@ -49,10 +49,10 @@ VERSION 1: PROFESSIONAL RESUME
 A concise paragraph (2-3 sentences) describing the project, its domain, and your role.
 
 ## Key Accomplishments
-- 4-6 bullet points, each one concise sentence
-- Follow the pattern: "[Action verb] [what] using [technology], resulting in [impact]"
+- 4-6 bullet points using the PAR method (Problem → Action → Result)
+- Pattern: "Resolved [specific problem or bottleneck] by [technical action using technology], resulting in [measurable outcome]"
 - Focus on the most impressive, resume-worthy achievements
-- Quantify where possible (endpoints, models, performance gains, etc.)
+- Quantify where possible (performance gains, error reduction, endpoints, etc.)
 
 ## Tech Stack
 Single line, comma-separated: Language, Framework, Database, Infrastructure, Tools
@@ -81,9 +81,9 @@ Describe the system design in detail:
 - Database schema design or data modeling approach if visible
 
 ## Key Technical Contributions
-- 6-12 detailed bullet points of concrete technical work evidenced in the diffs
-- Each bullet should be specific and descriptive (1-2 sentences each)
-- Follow the pattern: "Implemented/Designed/Built/Optimized [specific feature] by [technical approach], enabling [outcome/capability]"
+- 6-12 detailed bullet points of concrete technical work evidenced in the diffs, using the PAR method
+- Each bullet should be 1-2 sentences: the problem/challenge addressed, the technical approach taken, and the resulting capability or outcome
+- Pattern: "Addressed [specific technical problem or gap] by [implementing/designing/building approach using technology], enabling [outcome/capability]"
 - Cover: features built, APIs designed, data models created, algorithms implemented, performance optimizations, security measures, testing strategies, DevOps/CI-CD work
 - Include specific details: endpoint paths, class/module names, configuration parameters, library usage
 - If quantifiable metrics are inferable (number of endpoints, test cases, models, migrations), include them
@@ -134,14 +134,15 @@ Be exhaustive — capture everything visible:
 1. **Project/Repository**: name, path, organization (if visible)
 2. **Date range**: commit dates (if visible)
 3. **Technologies**: every language, framework, library, database, infrastructure tool, and service evidenced
-4. **Features & APIs**: specific endpoints, controllers, services, data models, UI components implemented or modified
-5. **Architecture**: patterns (MVC, microservices, event-driven, etc.), module organization, layer separation
-6. **Data models**: schemas, entities, migrations, relationships
-7. **Infrastructure**: Docker, CI/CD, cloud services, deployment configs
-8. **Testing**: test files, testing frameworks, test patterns
-9. **Technical complexity**: algorithms, business logic, error handling, security measures
-10. **Domain context**: what business problem does this code solve? Who are the users?
-11. **Code quality signals**: logging, documentation, error handling patterns, code organization
+4. **Problems & challenges**: specific bottlenecks, pain points, or limitations the changes are addressing (e.g., latency, scalability, missing feature, bug, tech debt)
+5. **Features & APIs**: specific endpoints, controllers, services, data models, UI components implemented or modified
+6. **Architecture**: patterns (MVC, microservices, event-driven, etc.), module organization, layer separation
+7. **Data models**: schemas, entities, migrations, relationships
+8. **Infrastructure**: Docker, CI/CD, cloud services, deployment configs
+9. **Testing**: test files, testing frameworks, test patterns
+10. **Technical complexity**: algorithms, business logic, error handling, security measures
+11. **Domain context**: what business problem does this code solve? Who are the users?
+12. **Code quality signals**: logging, documentation, error handling patterns, code organization
 
 Output detailed structured bullet points under each category. Include specific class names, file paths, and endpoint paths where visible. Skip categories that have no evidence in this chunk.
 
@@ -165,8 +166,8 @@ VERSION 1: PROFESSIONAL RESUME
 A concise paragraph (2-3 sentences) describing the project, its domain, and your role.
 
 ## Key Accomplishments
-- 4-6 bullet points, each one concise sentence
-- Follow the pattern: "[Action verb] [what] using [technology], resulting in [impact]"
+- 4-6 bullet points using the PAR method (Problem → Action → Result)
+- Pattern: "Resolved [specific problem or bottleneck] by [technical action using technology], resulting in [measurable outcome]"
 - Focus on the most impressive, resume-worthy achievements
 - Quantify where possible
 
@@ -187,9 +188,9 @@ A detailed paragraph (4-6 sentences) describing: what the project is, its busine
 Describe the system design in detail: codebase organization, architectural patterns, data flow, integration points, auth approach, database design.
 
 ## Key Technical Contributions
-- 6-12 detailed bullet points of concrete technical work
-- Each bullet: 1-2 sentences, specific and descriptive
-- Pattern: "Implemented/Designed/Built/Optimized [specific feature] by [technical approach], enabling [outcome/capability]"
+- 6-12 detailed bullet points of concrete technical work, using the PAR method
+- Each bullet: 1-2 sentences covering the problem addressed, the technical approach taken, and the resulting outcome
+- Pattern: "Addressed [specific technical problem or gap] by [implementing/designing/building approach using technology], enabling [outcome/capability]"
 - Include specific details: endpoint paths, class names, config parameters, library usage
 - Include quantifiable metrics where inferable
 
