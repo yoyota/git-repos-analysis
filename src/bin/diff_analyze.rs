@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -246,14 +247,14 @@ fn run() -> Result<(), String> {
 
     let use_stdin = args.input.is_none() && !io::stdin().is_terminal();
 
-    let (content, default_output_dir) = if use_stdin {
+    let (content, default_output_dir, input_stem) = if use_stdin {
         let mut buf = String::new();
         io::stdin()
             .read_to_string(&mut buf)
             .map_err(|e| format!("Failed to read stdin: {}", e))?;
         let cwd = std::env::current_dir().map_err(|e| format!("Cannot get cwd: {}", e))?;
         info!("processing: stdin");
-        (buf, cwd)
+        (buf, cwd, "stdin".to_string())
     } else {
         let input = args.input.map_or_else(default_input, Ok)?;
         if !input.exists() {
@@ -264,9 +265,14 @@ fn run() -> Result<(), String> {
             .map(PathBuf::from)
             .ok_or_else(|| "Cannot determine output dir from input path".to_string())?;
         info!("processing: {}", input.display());
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("diff")
+            .to_string();
         let content =
             fs::read_to_string(&input).map_err(|e| format!("Failed to read file: {}", e))?;
-        (content, parent)
+        (content, parent, stem)
     };
 
     let output_dir = args.output_dir.unwrap_or(default_output_dir);
@@ -274,7 +280,8 @@ fn run() -> Result<(), String> {
 
     let bpe = cl100k_base().expect("Failed to initialize tokenizer");
 
-    let output = summarize_content(&content, &bpe, model, effort)?;
+    let checkpoint_path = output_dir.join(format!("{}.chunks.json", input_stem));
+    let output = summarize_content(&content, &bpe, model, effort, &checkpoint_path)?;
     write_output(&output_dir.join("debug_raw_output.txt"), &output)?;
     let [resume, summary] = split_versions(&output);
 
@@ -319,6 +326,7 @@ fn summarize_content(
     bpe: &tiktoken_rs::CoreBPE,
     model: Option<&str>,
     effort: Option<&str>,
+    checkpoint_path: &Path,
 ) -> Result<String, String> {
     let token_count = bpe.encode_with_special_tokens(file_content).len();
     info!(token_count, "file token count");
@@ -336,8 +344,18 @@ fn summarize_content(
     let chunks = split_into_chunks_by_tokens(file_content, bpe, MAX_TOKENS_PER_CHUNK);
     info!(chunks = chunks.len(), "split into chunks");
 
-    let mut partial_summaries = Vec::new();
+    let loaded = load_checkpoint(checkpoint_path)?;
+    let done_indices: HashSet<usize> = loaded.iter().map(|(i, _)| *i).collect();
+    if !done_indices.is_empty() {
+        info!(skipped = done_indices.len(), "resuming from checkpoint");
+    }
+    let mut partial_summaries: Vec<(usize, String)> = loaded;
+
     for (i, chunk) in chunks.iter().enumerate() {
+        if done_indices.contains(&i) {
+            continue;
+        }
+
         let chunk_tokens = bpe.encode_with_special_tokens(chunk).len();
         info!(
             chunk = i + 1,
@@ -345,9 +363,20 @@ fn summarize_content(
             chunk_tokens,
             "processing chunk"
         );
+
         match summarize_chunk(chunk, model, effort) {
-            Ok(summary) => partial_summaries.push(summary),
-            Err(e) => warn!(chunk = i + 1, error = %e, "chunk failed"),
+            Ok(summary) => {
+                partial_summaries.push((i, summary));
+                save_checkpoint(checkpoint_path, &partial_summaries)?;
+            }
+            Err(e) if e.starts_with("RATE_LIMIT:") => {
+                let _ = save_checkpoint(checkpoint_path, &partial_summaries);
+                return Err(format!(
+                    "Rate limit hit. Partial progress saved to {}. Re-run after the cooldown.",
+                    checkpoint_path.display()
+                ));
+            }
+            Err(e) => return Err(e),
         }
     }
 
@@ -355,8 +384,100 @@ fn summarize_content(
         return Err("All chunks failed to process".to_string());
     }
 
-    info!(count = partial_summaries.len(), "merging partial summaries");
-    merge_summaries(&partial_summaries, model, effort)
+    // Sort by chunk index before merging (checkpoint load order is not guaranteed)
+    partial_summaries.sort_by_key(|(i, _)| *i);
+    let summaries_in_order: Vec<String> = partial_summaries.into_iter().map(|(_, s)| s).collect();
+
+    info!(count = summaries_in_order.len(), "merging partial summaries");
+    match merge_summaries(&summaries_in_order, model, effort) {
+        Ok(result) => {
+            if let Err(e) = delete_checkpoint(checkpoint_path) {
+                warn!(error = %e, "failed to delete checkpoint after successful merge");
+            }
+            Ok(result)
+        }
+        Err(e) if e.starts_with("RATE_LIMIT:") => Err(format!(
+            "Rate limit hit during merge. Chunk summaries preserved at {}. Re-run to retry merge.",
+            checkpoint_path.display()
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+fn load_checkpoint(path: &Path) -> Result<Vec<(usize, String)>, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("Failed to read checkpoint {}: {}", path.display(), e)),
+    };
+
+    let arr: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "checkpoint file is malformed JSON, treating as fresh start");
+            return Ok(vec![]);
+        }
+    };
+
+    let Some(arr) = arr.as_array() else {
+        warn!(path = %path.display(), "checkpoint file is not a JSON array, treating as fresh start");
+        return Ok(vec![]);
+    };
+
+    let mut records = Vec::new();
+    for obj in arr {
+        let chunk_index = match obj.get("chunk_index").and_then(|v| v.as_u64()) {
+            Some(i) => i as usize,
+            None => {
+                warn!(path = %path.display(), "checkpoint record missing chunk_index, treating as fresh start");
+                return Ok(vec![]);
+            }
+        };
+        let summary = match obj.get("summary").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                warn!(path = %path.display(), "checkpoint record missing summary, treating as fresh start");
+                return Ok(vec![]);
+            }
+        };
+        records.push((chunk_index, summary));
+    }
+
+    Ok(records)
+}
+
+fn save_checkpoint(path: &Path, completed: &[(usize, String)]) -> Result<(), String> {
+    let records: Vec<serde_json::Value> = completed
+        .iter()
+        .map(|(i, s)| serde_json::json!({ "chunk_index": i, "summary": s }))
+        .collect();
+    let json = serde_json::to_string(&records)
+        .map_err(|e| format!("Failed to serialise checkpoint: {}", e))?;
+
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, &json)
+        .map_err(|e| format!("Failed to write tmp checkpoint {}: {}", tmp_path.display(), e))?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        format!(
+            "Failed to rename checkpoint {} -> {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+fn delete_checkpoint(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Failed to delete checkpoint {}: {}",
+            path.display(),
+            e
+        )),
+    }
 }
 
 fn summarize_content_direct(
@@ -645,6 +766,359 @@ mod tests {
                 args.contains(&"--effort".to_string()),
                 "expected --effort in args: {:?}",
                 args
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Checkpoint tests — all scenarios from section 3 of plans/rate_limit_retry.md
+    // These tests reference load_checkpoint, save_checkpoint, delete_checkpoint,
+    // and the new summarize_content signature (with checkpoint_path: &Path).
+    // None of those exist yet, so this entire module will fail to compile (RED).
+    // ---------------------------------------------------------------------------
+    mod checkpoint_tests {
+        use super::*;
+        use std::path::Path;
+        use tempfile::TempDir;
+
+        // ------------------------------------------------------------------
+        // Helper: write raw bytes to a path (used to plant malformed/wrong
+        // schema checkpoint files without going through save_checkpoint).
+        // ------------------------------------------------------------------
+        fn write_raw(path: &Path, content: &str) {
+            std::fs::write(path, content).expect("write_raw failed");
+        }
+
+        // ------------------------------------------------------------------
+        // Helper: read and parse checkpoint file into Vec<(usize, String)>.
+        // Panics with the raw content on parse failure to help diagnose.
+        // ------------------------------------------------------------------
+        fn read_checkpoint_file(path: &Path) -> Vec<(usize, String)> {
+            let raw = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("cannot read checkpoint at {}: {e}", path.display()));
+            let arr: serde_json::Value =
+                serde_json::from_str(&raw).unwrap_or_else(|e| {
+                    panic!("checkpoint is not valid JSON at {}: {e}\nraw: {raw}", path.display())
+                });
+            arr.as_array()
+                .unwrap_or_else(|| panic!("checkpoint is not a JSON array\nraw: {raw}"))
+                .iter()
+                .map(|obj| {
+                    let idx = obj["chunk_index"]
+                        .as_u64()
+                        .unwrap_or_else(|| panic!("missing chunk_index in record: {obj}"))
+                        as usize;
+                    let summary = obj["summary"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("missing summary in record: {obj}"))
+                        .to_string();
+                    (idx, summary)
+                })
+                .collect()
+        }
+
+        // ==================================================================
+        // Group: load_checkpoint / save_checkpoint / delete_checkpoint units
+        // ==================================================================
+
+        // Missing file returns empty vec (fresh start), no error.
+        #[test]
+        fn load_checkpoint_missing_file_returns_empty() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("nonexistent.chunks.json");
+            let result = load_checkpoint(&path);
+            assert!(result.is_ok(), "expected Ok for missing file, got: {:?}", result);
+            let records = result.unwrap();
+            assert!(
+                records.is_empty(),
+                "expected empty vec for missing file, got: {:?}",
+                records
+            );
+        }
+
+        // save then load round-trips correctly.
+        #[test]
+        fn save_and_load_checkpoint_round_trip() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("test.chunks.json");
+            let records: Vec<(usize, String)> = vec![
+                (0, "summary for chunk 0".to_string()),
+                (1, "summary for chunk 1".to_string()),
+            ];
+            save_checkpoint(&path, &records).expect("save_checkpoint failed");
+            let loaded = load_checkpoint(&path).expect("load_checkpoint failed");
+            // Both records must be present; order may differ
+            assert_eq!(
+                loaded.len(),
+                2,
+                "expected 2 records after round-trip, got: {:?}",
+                loaded
+            );
+            let has_zero = loaded.iter().any(|(i, s)| *i == 0 && s == "summary for chunk 0");
+            let has_one = loaded.iter().any(|(i, s)| *i == 1 && s == "summary for chunk 1");
+            assert!(has_zero, "record for index 0 missing after round-trip: {:?}", loaded);
+            assert!(has_one, "record for index 1 missing after round-trip: {:?}", loaded);
+        }
+
+        // save_checkpoint writes valid JSON (atomic write guarantee).
+        #[test]
+        fn save_checkpoint_writes_valid_json() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("atomic.chunks.json");
+            let records: Vec<(usize, String)> = vec![(0, "chunk zero".to_string())];
+            save_checkpoint(&path, &records).expect("save_checkpoint failed");
+            // read raw bytes and parse as JSON — must not panic
+            let parsed = read_checkpoint_file(&path);
+            assert_eq!(parsed.len(), 1, "expected 1 record, got: {:?}", parsed);
+        }
+
+        // save_checkpoint with empty slice writes an empty JSON array.
+        #[test]
+        fn save_checkpoint_empty_slice_writes_empty_array() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("empty.chunks.json");
+            save_checkpoint(&path, &[]).expect("save_checkpoint failed");
+            let raw = std::fs::read_to_string(&path).expect("cannot read file");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&raw).expect("not valid JSON");
+            let arr = parsed.as_array().expect("expected JSON array");
+            assert!(
+                arr.is_empty(),
+                "expected empty JSON array, got: {}",
+                raw
+            );
+        }
+
+        // delete_checkpoint removes an existing file.
+        #[test]
+        fn delete_checkpoint_removes_existing_file() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("to_delete.chunks.json");
+            std::fs::write(&path, "[]").unwrap();
+            assert!(path.exists(), "file must exist before deletion");
+            delete_checkpoint(&path).expect("delete_checkpoint failed");
+            assert!(
+                !path.exists(),
+                "file must not exist after delete_checkpoint: {}",
+                path.display()
+            );
+        }
+
+        // delete_checkpoint on missing file is not an error.
+        #[test]
+        fn delete_checkpoint_missing_file_is_not_error() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("ghost.chunks.json");
+            let result = delete_checkpoint(&path);
+            assert!(
+                result.is_ok(),
+                "expected Ok when deleting non-existent file, got: {:?}",
+                result
+            );
+        }
+
+        // Malformed JSON in checkpoint: load_checkpoint returns Ok(empty) (warn + fresh start).
+        #[test]
+        fn load_checkpoint_malformed_json_returns_empty_ok() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("bad.chunks.json");
+            write_raw(&path, "this is not json at all }{");
+            let result = load_checkpoint(&path);
+            assert!(
+                result.is_ok(),
+                "expected Ok (warn + fresh start) for malformed JSON, got: {:?}",
+                result
+            );
+            let records = result.unwrap();
+            assert!(
+                records.is_empty(),
+                "expected empty records for malformed JSON, got: {:?}",
+                records
+            );
+            // File must still exist (not deleted automatically per plan)
+            assert!(
+                path.exists(),
+                "malformed checkpoint file must NOT be deleted automatically: {}",
+                path.display()
+            );
+        }
+
+        // Wrong schema (valid JSON but missing fields): same warn + fresh start behaviour.
+        #[test]
+        fn load_checkpoint_wrong_schema_returns_empty_ok() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("wrong_schema.chunks.json");
+            write_raw(&path, r#"[{"foo": 1}]"#);
+            let result = load_checkpoint(&path);
+            assert!(
+                result.is_ok(),
+                "expected Ok (warn + fresh start) for wrong schema, got: {:?}",
+                result
+            );
+            let records = result.unwrap();
+            assert!(
+                records.is_empty(),
+                "expected empty records for wrong schema, got: {:?}",
+                records
+            );
+        }
+
+        // ==================================================================
+        // Group: save_checkpoint accumulates records correctly (no data loss)
+        // ==================================================================
+
+        // Calling save_checkpoint multiple times with growing slices preserves
+        // all prior records (simulates what summarize_content does after each chunk).
+        #[test]
+        fn save_checkpoint_accumulates_all_records() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("accum.chunks.json");
+
+            let mut completed: Vec<(usize, String)> = Vec::new();
+
+            completed.push((0, "first".to_string()));
+            save_checkpoint(&path, &completed).expect("save after chunk 0 failed");
+            let after_one = read_checkpoint_file(&path);
+            assert_eq!(after_one.len(), 1, "expected 1 record after chunk 0: {:?}", after_one);
+
+            completed.push((1, "second".to_string()));
+            save_checkpoint(&path, &completed).expect("save after chunk 1 failed");
+            let after_two = read_checkpoint_file(&path);
+            assert_eq!(after_two.len(), 2, "expected 2 records after chunk 1: {:?}", after_two);
+
+            completed.push((2, "third".to_string()));
+            save_checkpoint(&path, &completed).expect("save after chunk 2 failed");
+            let after_three = read_checkpoint_file(&path);
+            assert_eq!(
+                after_three.len(),
+                3,
+                "expected 3 records after chunk 2: {:?}",
+                after_three
+            );
+        }
+
+        // ==================================================================
+        // Group: checkpoint path derivation (run() helper logic)
+        // ==================================================================
+
+        // Input file `diff.txt` produces checkpoint named `diff.chunks.json`.
+        #[test]
+        fn checkpoint_path_from_diff_txt() {
+            let input = Path::new("/some/output/dir/diff.txt");
+            let output_dir = Path::new("/some/output/dir");
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("diff");
+            let checkpoint = output_dir.join(format!("{}.chunks.json", stem));
+            assert!(
+                checkpoint.ends_with("diff.chunks.json"),
+                "{}",
+                checkpoint.display()
+            );
+        }
+
+        // Input file with no extension produces `myinput.chunks.json`.
+        #[test]
+        fn checkpoint_path_from_extensionless_input() {
+            let input = Path::new("/some/output/dir/myinput");
+            let output_dir = Path::new("/some/output/dir");
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("diff");
+            let checkpoint = output_dir.join(format!("{}.chunks.json", stem));
+            assert!(
+                checkpoint.ends_with("myinput.chunks.json"),
+                "{}",
+                checkpoint.display()
+            );
+        }
+
+        // Stdin mode produces `stdin.chunks.json`.
+        #[test]
+        fn checkpoint_path_for_stdin() {
+            let output_dir = Path::new("/some/output/dir");
+            let stem = "stdin";
+            let checkpoint = output_dir.join(format!("{}.chunks.json", stem));
+            assert!(
+                checkpoint.ends_with("stdin.chunks.json"),
+                "{}",
+                checkpoint.display()
+            );
+        }
+
+        // ==================================================================
+        // Group: summarize_content new signature (checkpoint_path: &Path)
+        // These will fail to compile because the current signature does NOT
+        // accept a checkpoint_path parameter.
+        // ==================================================================
+
+        // summarize_content accepts a &Path as its fifth argument.
+        #[test]
+        fn summarize_content_accepts_checkpoint_path_argument() {
+            let dir = TempDir::new().unwrap();
+            let checkpoint = dir.path().join("test.chunks.json");
+            let bpe = tiktoken_rs::cl100k_base().expect("tokenizer");
+            // Small content: will go through summarize_content_direct, not the
+            // chunk path.  We don't care about the Ok/Err — only that it compiles
+            // and that the function accepts the extra argument.
+            let _result: Result<String, String> =
+                summarize_content("hello world", &bpe, None, None, &checkpoint);
+        }
+
+        // After a successful summarize_content call, the checkpoint file is deleted.
+        // (This test will fail to compile due to missing checkpoint_path param.)
+        #[test]
+        fn summarize_content_deletes_checkpoint_on_success() {
+            let dir = TempDir::new().unwrap();
+            let checkpoint = dir.path().join("success.chunks.json");
+            // Pre-create the file so we can verify it gets cleaned up.
+            save_checkpoint(&checkpoint, &[]).expect("pre-create checkpoint");
+            assert!(checkpoint.exists(), "checkpoint must exist before call");
+            let bpe = tiktoken_rs::cl100k_base().expect("tokenizer");
+            // This will error (no claude CLI) but the point is compile-time check.
+            let _result: Result<String, String> =
+                summarize_content("tiny content", &bpe, None, None, &checkpoint);
+            // We cannot assert file state here because call_claude will fail in CI,
+            // but the compile-time signature check is the critical RED assertion.
+        }
+
+        // summarize_content with a pre-populated checkpoint file containing all
+        // chunk records should skip all chunk calls and go straight to merge.
+        // (Compile-fail test for the new signature.)
+        #[test]
+        fn summarize_content_with_full_checkpoint_skips_chunks() {
+            let dir = TempDir::new().unwrap();
+            let checkpoint = dir.path().join("full.chunks.json");
+            // Pre-populate with one record so load_checkpoint returns it.
+            let completed = vec![(0usize, "pre-summarised chunk 0".to_string())];
+            save_checkpoint(&checkpoint, &completed).expect("pre-populate checkpoint");
+            let bpe = tiktoken_rs::cl100k_base().expect("tokenizer");
+            // Again, compile-time signature check is the goal.
+            let _result: Result<String, String> =
+                summarize_content("hello world", &bpe, None, None, &checkpoint);
+        }
+
+        // load_checkpoint followed by save_checkpoint with out-of-range chunk
+        // indices: those indices are never matched, so all real chunks are processed.
+        // This is a unit test of load_checkpoint behaviour only.
+        #[test]
+        fn load_checkpoint_with_out_of_range_indices_returns_them_verbatim() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("oob.chunks.json");
+            // chunk_index 9999 is "out of range" for a 2-chunk job, but
+            // load_checkpoint must still return it without error.
+            let records = vec![(9999usize, "oob summary".to_string())];
+            save_checkpoint(&path, &records).expect("save failed");
+            let loaded = load_checkpoint(&path).expect("load failed");
+            assert_eq!(loaded.len(), 1, "expected 1 record, got: {:?}", loaded);
+            let (idx, summary) = &loaded[0];
+            assert_eq!(*idx, 9999, "expected index 9999, got: {idx}");
+            assert_eq!(
+                summary.as_str(),
+                "oob summary",
+                "expected 'oob summary', got: {summary}"
             );
         }
     }

@@ -310,6 +310,7 @@ dependencies = [
  "clap",
  "git2",
  "regex",
+ "serde_json",
  "tempfile",
  "tiktoken-rs",
  "tracing",
