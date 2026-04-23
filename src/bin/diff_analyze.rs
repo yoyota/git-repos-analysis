@@ -283,7 +283,7 @@ fn run() -> Result<(), String> {
     let checkpoint_path = output_dir.join(format!("{}.chunks.json", input_stem));
     let output = summarize_content(&content, &bpe, model, effort, &checkpoint_path)?;
     write_output(&output_dir.join("debug_raw_output.txt"), &output)?;
-    let [resume, summary] = split_versions(&output);
+    let [resume, summary] = split_versions(&output)?;
 
     write_output(&output_dir.join("resume.txt"), &resume)?;
     write_output(&output_dir.join("summary.txt"), &summary)?;
@@ -311,14 +311,20 @@ fn write_output(path: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn split_versions(output: &str) -> [String; 2] {
+fn split_versions(output: &str) -> Result<[String; 2], String> {
     const SEP: &str =
         "================================================================================";
     let parts: Vec<&str> = output.split(SEP).collect();
     // parts[1] = VERSION 1 header, parts[2] = version 1 content
     // parts[3] = VERSION 2 header, parts[4] = version 2 content
-    let get = |i: usize| parts.get(i).unwrap_or(&"").trim().to_string();
-    [get(2), get(4)]
+    if parts.len() < 5 {
+        return Err(format!(
+            "Claude output did not contain the expected delimiter pattern (got {} sections, need 5). \
+             Check debug_raw_output.txt to see the raw response.",
+            parts.len()
+        ));
+    }
+    Ok([parts[2].trim().to_string(), parts[4].trim().to_string()])
 }
 
 fn summarize_content(
