@@ -43,6 +43,17 @@ Output BOTH versions below, separated by the exact delimiter shown. Entirely in 
 VERSION 1: PROFESSIONAL RESUME
 ================================================================================
 
+---
+title: "<Project Name>"
+type: resume-entry
+status: review
+date_start: YYYY-MM
+date_end: YYYY-MM
+tags: [resume, <domain-tag>, <tech-tag>, ...]
+tech: [<Language>, <Framework>, <Library>, ...]
+repo: <repository URL if visible in diff, otherwise omit this line>
+---
+
 # <Project Name>
 📅 MM/YYYY - MM/YYYY
 
@@ -61,6 +72,16 @@ Single line, comma-separated: Language, Framework, Database, Infrastructure, Too
 ================================================================================
 VERSION 2: DETAILED TECHNICAL ANALYSIS (LLM SOURCE)
 ================================================================================
+
+---
+title: "<Project Name> — Technical Summary"
+type: project-summary
+status: review
+date_start: YYYY-MM
+date_end: YYYY-MM
+related: "[[resume]]"
+tags: [project, <domain-tag>, <tech-tag>, analysis]
+---
 
 # <Project Name>
 📅 MM/YYYY - MM/YYYY
@@ -122,6 +143,7 @@ Rules:
 - When uncertain about something, phrase it as "appears to" or "likely" rather than omitting it.
 - Include raw technical details (class names, endpoint paths, config keys) in Version 2.
 - If the diffs are too small for a full analysis, still extract every detail possible and note the limited scope.
+- Each version must begin with a valid YAML frontmatter block (opened and closed by `---` on their own lines) so the file is readable by Obsidian. Do not emit placeholder angle-bracket values — fill every field from diff evidence, and omit any field (e.g. `repo`) when no evidence is available. `date_start` / `date_end` must use the `YYYY-MM` format (e.g. `2024-03`).
 
 Output ONLY the two versions with the delimiters, no additional commentary.
 
@@ -160,6 +182,17 @@ Output BOTH versions below, separated by the exact delimiter shown. Entirely in 
 VERSION 1: PROFESSIONAL RESUME
 ================================================================================
 
+---
+title: "<Project Name>"
+type: resume-entry
+status: <complete|in-progress|archived>
+date_start: YYYY-MM
+date_end: YYYY-MM
+tags: [resume, <domain-tag>, <tech-tag>, ...]
+tech: [<Language>, <Framework>, <Library>, ...]
+repo: <repository URL if visible in diff, otherwise omit this line>
+---
+
 # <Project Name>
 📅 MM/YYYY - MM/YYYY
 
@@ -178,6 +211,16 @@ Single line, comma-separated: Language, Framework, Database, Infrastructure, Too
 ================================================================================
 VERSION 2: DETAILED TECHNICAL ANALYSIS (LLM SOURCE)
 ================================================================================
+
+---
+title: "<Project Name> — Technical Summary"
+type: project-summary
+status: <complete|in-progress|archived>
+date_start: YYYY-MM
+date_end: YYYY-MM
+related: "[[resume]]"
+tags: [project, <domain-tag>, <tech-tag>, analysis]
+---
 
 # <Project Name>
 📅 MM/YYYY - MM/YYYY
@@ -218,6 +261,7 @@ Rules:
 - Version 2 should be verbose and thorough — more detail is better for downstream LLM consumption.
 - When uncertain, phrase as "appears to" or "likely" rather than omitting.
 - Include raw technical details (class names, endpoint paths, config keys) in Version 2.
+- Each version must begin with a valid YAML frontmatter block (opened and closed by `---` on their own lines) so the file is readable by Obsidian. Do not emit placeholder angle-bracket values — fill every field from evidence in the partial summaries, and omit any field (e.g. `repo`) when no evidence is available. `date_start` / `date_end` must use the `YYYY-MM` format (e.g. `2024-03`).
 
 Output ONLY the two versions with the delimiters, no additional commentary.
 
@@ -394,7 +438,10 @@ fn summarize_content(
     partial_summaries.sort_by_key(|(i, _)| *i);
     let summaries_in_order: Vec<String> = partial_summaries.into_iter().map(|(_, s)| s).collect();
 
-    info!(count = summaries_in_order.len(), "merging partial summaries");
+    info!(
+        count = summaries_in_order.len(),
+        "merging partial summaries"
+    );
     match merge_summaries(&summaries_in_order, model, effort) {
         Ok(result) => {
             if let Err(e) = delete_checkpoint(checkpoint_path) {
@@ -414,7 +461,13 @@ fn load_checkpoint(path: &Path) -> Result<Vec<(usize, String)>, String> {
     let raw = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(format!("Failed to read checkpoint {}: {}", path.display(), e)),
+        Err(e) => {
+            return Err(format!(
+                "Failed to read checkpoint {}: {}",
+                path.display(),
+                e
+            ))
+        }
     };
 
     let arr: serde_json::Value = match serde_json::from_str(&raw) {
@@ -461,8 +514,13 @@ fn save_checkpoint(path: &Path, completed: &[(usize, String)]) -> Result<(), Str
         .map_err(|e| format!("Failed to serialise checkpoint: {}", e))?;
 
     let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, &json)
-        .map_err(|e| format!("Failed to write tmp checkpoint {}: {}", tmp_path.display(), e))?;
+    fs::write(&tmp_path, &json).map_err(|e| {
+        format!(
+            "Failed to write tmp checkpoint {}: {}",
+            tmp_path.display(),
+            e
+        )
+    })?;
     fs::rename(&tmp_path, path).map_err(|e| {
         format!(
             "Failed to rename checkpoint {} -> {}: {}",
@@ -802,10 +860,12 @@ mod tests {
         fn read_checkpoint_file(path: &Path) -> Vec<(usize, String)> {
             let raw = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("cannot read checkpoint at {}: {e}", path.display()));
-            let arr: serde_json::Value =
-                serde_json::from_str(&raw).unwrap_or_else(|e| {
-                    panic!("checkpoint is not valid JSON at {}: {e}\nraw: {raw}", path.display())
-                });
+            let arr: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+                panic!(
+                    "checkpoint is not valid JSON at {}: {e}\nraw: {raw}",
+                    path.display()
+                )
+            });
             arr.as_array()
                 .unwrap_or_else(|| panic!("checkpoint is not a JSON array\nraw: {raw}"))
                 .iter()
@@ -833,7 +893,11 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let path = dir.path().join("nonexistent.chunks.json");
             let result = load_checkpoint(&path);
-            assert!(result.is_ok(), "expected Ok for missing file, got: {:?}", result);
+            assert!(
+                result.is_ok(),
+                "expected Ok for missing file, got: {:?}",
+                result
+            );
             let records = result.unwrap();
             assert!(
                 records.is_empty(),
@@ -860,10 +924,22 @@ mod tests {
                 "expected 2 records after round-trip, got: {:?}",
                 loaded
             );
-            let has_zero = loaded.iter().any(|(i, s)| *i == 0 && s == "summary for chunk 0");
-            let has_one = loaded.iter().any(|(i, s)| *i == 1 && s == "summary for chunk 1");
-            assert!(has_zero, "record for index 0 missing after round-trip: {:?}", loaded);
-            assert!(has_one, "record for index 1 missing after round-trip: {:?}", loaded);
+            let has_zero = loaded
+                .iter()
+                .any(|(i, s)| *i == 0 && s == "summary for chunk 0");
+            let has_one = loaded
+                .iter()
+                .any(|(i, s)| *i == 1 && s == "summary for chunk 1");
+            assert!(
+                has_zero,
+                "record for index 0 missing after round-trip: {:?}",
+                loaded
+            );
+            assert!(
+                has_one,
+                "record for index 1 missing after round-trip: {:?}",
+                loaded
+            );
         }
 
         // save_checkpoint writes valid JSON (atomic write guarantee).
@@ -885,14 +961,9 @@ mod tests {
             let path = dir.path().join("empty.chunks.json");
             save_checkpoint(&path, &[]).expect("save_checkpoint failed");
             let raw = std::fs::read_to_string(&path).expect("cannot read file");
-            let parsed: serde_json::Value =
-                serde_json::from_str(&raw).expect("not valid JSON");
+            let parsed: serde_json::Value = serde_json::from_str(&raw).expect("not valid JSON");
             let arr = parsed.as_array().expect("expected JSON array");
-            assert!(
-                arr.is_empty(),
-                "expected empty JSON array, got: {}",
-                raw
-            );
+            assert!(arr.is_empty(), "expected empty JSON array, got: {}", raw);
         }
 
         // delete_checkpoint removes an existing file.
@@ -985,12 +1056,22 @@ mod tests {
             completed.push((0, "first".to_string()));
             save_checkpoint(&path, &completed).expect("save after chunk 0 failed");
             let after_one = read_checkpoint_file(&path);
-            assert_eq!(after_one.len(), 1, "expected 1 record after chunk 0: {:?}", after_one);
+            assert_eq!(
+                after_one.len(),
+                1,
+                "expected 1 record after chunk 0: {:?}",
+                after_one
+            );
 
             completed.push((1, "second".to_string()));
             save_checkpoint(&path, &completed).expect("save after chunk 1 failed");
             let after_two = read_checkpoint_file(&path);
-            assert_eq!(after_two.len(), 2, "expected 2 records after chunk 1: {:?}", after_two);
+            assert_eq!(
+                after_two.len(),
+                2,
+                "expected 2 records after chunk 1: {:?}",
+                after_two
+            );
 
             completed.push((2, "third".to_string()));
             save_checkpoint(&path, &completed).expect("save after chunk 2 failed");
@@ -1012,10 +1093,7 @@ mod tests {
         fn checkpoint_path_from_diff_txt() {
             let input = Path::new("/some/output/dir/diff.txt");
             let output_dir = Path::new("/some/output/dir");
-            let stem = input
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("diff");
+            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("diff");
             let checkpoint = output_dir.join(format!("{}.chunks.json", stem));
             assert!(
                 checkpoint.ends_with("diff.chunks.json"),
@@ -1029,10 +1107,7 @@ mod tests {
         fn checkpoint_path_from_extensionless_input() {
             let input = Path::new("/some/output/dir/myinput");
             let output_dir = Path::new("/some/output/dir");
-            let stem = input
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("diff");
+            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("diff");
             let checkpoint = output_dir.join(format!("{}.chunks.json", stem));
             assert!(
                 checkpoint.ends_with("myinput.chunks.json"),
