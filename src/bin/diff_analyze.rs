@@ -285,8 +285,8 @@ fn run() -> Result<(), String> {
     write_output(&output_dir.join("debug_raw_output.txt"), &output)?;
     let [resume, summary] = split_versions(&output)?;
 
-    write_output(&output_dir.join("resume.txt"), &resume)?;
-    write_output(&output_dir.join("summary.txt"), &summary)?;
+    write_output(&output_dir.join("resume.md"), &resume)?;
+    write_output(&output_dir.join("summary.md"), &summary)?;
 
     info!("done. output directory: {}", output_dir.display());
     Ok(())
