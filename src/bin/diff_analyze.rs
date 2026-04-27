@@ -33,6 +33,15 @@ struct Args {
     effort: Option<String>,
 }
 
+const STDOUT_ONLY_DIRECTIVE: &str = r#"CRITICAL OUTPUT CONTRACT — read before doing anything else:
+- This prompt is being piped through `claude --print` by an automated subprocess that captures your stdout and parses it.
+- Respond with the final text inline in this reply ONLY. Do NOT call any tools.
+- Do NOT enter plan mode, do NOT use EnterPlanMode/ExitPlanMode, do NOT use Skill, do NOT use Write/Edit, do NOT save a plan file under ~/.claude/plans, do NOT create files anywhere.
+- Do NOT print status messages like "Plan file written" or "Done". Your entire stdout must be the two delimited sections described below — nothing else.
+- If you feel the urge to "save" or "write" the result somewhere, suppress it. Just print the result.
+
+"#;
+
 const PROMPT_TEMPLATE: &str = r#"You are a senior technical resume writer. Analyze the following git diff content and produce TWO versions of a project summary in a single output.
 
 Carefully examine: file paths, package names, import statements, frameworks, APIs, database schemas, config files, commit messages, test files, CI/CD configs, and code patterns. Extract every piece of technical evidence you can find.
@@ -549,7 +558,11 @@ fn summarize_content_direct(
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Result<String, String> {
-    call_claude(&format!("{}{}", PROMPT_TEMPLATE, content), model, effort)
+    call_claude(
+        &format!("{}{}{}", STDOUT_ONLY_DIRECTIVE, PROMPT_TEMPLATE, content),
+        model,
+        effort,
+    )
 }
 
 fn summarize_chunk(
@@ -558,7 +571,7 @@ fn summarize_chunk(
     effort: Option<&str>,
 ) -> Result<String, String> {
     call_claude(
-        &format!("{}{}", CHUNK_PROMPT_TEMPLATE, chunk),
+        &format!("{}{}{}", STDOUT_ONLY_DIRECTIVE, CHUNK_PROMPT_TEMPLATE, chunk),
         model,
         effort,
     )
@@ -571,7 +584,10 @@ fn merge_summaries(
 ) -> Result<String, String> {
     let combined = summaries.join("\n\n---\n\n");
     call_claude(
-        &format!("{}{}", MERGE_PROMPT_TEMPLATE, combined),
+        &format!(
+            "{}{}{}",
+            STDOUT_ONLY_DIRECTIVE, MERGE_PROMPT_TEMPLATE, combined
+        ),
         model,
         effort,
     )
