@@ -55,7 +55,7 @@ VERSION 1: PROFESSIONAL RESUME
 ---
 title: "<Project Name>"
 type: resume-entry
-status: review
+status: under review
 date_start: YYYY-MM
 date_end: YYYY-MM
 tags: [resume, <domain-tag>, <tech-tag>, ...]
@@ -85,7 +85,7 @@ VERSION 2: DETAILED TECHNICAL ANALYSIS (LLM SOURCE)
 ---
 title: "<Project Name> — Technical Summary"
 type: project-summary
-status: review
+status: under review
 date_start: YYYY-MM
 date_end: YYYY-MM
 related: "[[resume]]"
@@ -571,7 +571,10 @@ fn summarize_chunk(
     effort: Option<&str>,
 ) -> Result<String, String> {
     call_claude(
-        &format!("{}{}{}", STDOUT_ONLY_DIRECTIVE, CHUNK_PROMPT_TEMPLATE, chunk),
+        &format!(
+            "{}{}{}",
+            STDOUT_ONLY_DIRECTIVE, CHUNK_PROMPT_TEMPLATE, chunk
+        ),
         model,
         effort,
     )
